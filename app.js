@@ -5,7 +5,7 @@ const app = document.getElementById('app');
 
 if (!cfg.SUPABASE_URL || !cfg.SUPABASE_ANON_KEY) {
   app.innerHTML =
-    '<div class="center-screen"><div class="auth-card card">Missing Supabase config in config.js.</div></div>';
+    '<div class="center-screen"><div class="auth-card card grad-top">Missing Supabase config in config.js.</div></div>';
   throw new Error('Missing PORTAL_CONFIG');
 }
 
@@ -19,6 +19,7 @@ const toISO = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDat
 const TODAY = toISO(new Date());
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']; // Monday-first
+const DOW1 = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 const WD_PLURAL = ['Sundays','Mondays','Tuesdays','Wednesdays','Thursdays','Fridays','Saturdays'];
 
 const KIND_LABEL = { in: 'In office', vacation: 'On vacation', sick: 'Off sick' };
@@ -63,6 +64,32 @@ function fmtDate(iso) {
   return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+function addDaysISO(iso, n) {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + n);
+  return toISO(d);
+}
+
+function workdaysInMonth(y, m) {
+  let c = 0;
+  const days = new Date(y, m + 1, 0).getDate();
+  for (let d = 1; d <= days; d++) {
+    const wd = new Date(y, m, d).getDay();
+    if (wd !== 0 && wd !== 6) c++;
+  }
+  return c;
+}
+
+// 42-cell Monday-first month grid
+function gridCells(year, month) {
+  const first = new Date(year, month, 1);
+  const offset = (first.getDay() + 6) % 7;
+  const start = new Date(year, month, 1 - offset);
+  const cells = [];
+  for (let i = 0; i < 42; i++) cells.push(new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
+  return cells;
+}
+
 // ---- Time formatting (values arrive as "HH:MM" or "HH:MM:SS") ----
 const hhmm = (t) => String(t || '').slice(0, 5);
 function fmt12(t) {
@@ -82,20 +109,67 @@ const fmtRange = (s, e) => `${fmt12(s)} – ${fmt12(e)}${isOvernight(s, e) ? ' <
 const fmtRangePlain = (s, e) => `${fmt12(s)} – ${fmt12(e)}${isOvernight(s, e) ? ' (next day)' : ''}`;
 const fmtCompactRange = (s, e) => `${fmtCompact(s)}–${fmtCompact(e)}`;
 
-const LOGO = '<img class="logo" src="./assets/logo.png" alt="Redline" />';
-const BRAND = `<span class="brand">${LOGO}<span class="name">RED<span>LINE</span></span></span>`;
+// ---- Icons (feather-style strokes) ----
+function icon(name, cls = 'ic') {
+  const paths = {
+    dash: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+    cal: '<rect x="3" y="4" width="18" height="17" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+    team: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    gear: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+    out: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+    bell: '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+    search: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+    plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+    edit: '<path d="M17 3a2.83 2.83 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
+  };
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
+}
+
+// Flat "person at a desk" illustration for the welcome card.
+const HERO_ART = `
+<svg class="hero-art" viewBox="0 0 300 190" aria-hidden="true">
+  <circle cx="150" cy="88" r="74" fill="#fdeaec"/>
+  <rect x="55" y="28" width="9" height="9" rx="2" fill="#f6b63b" transform="rotate(18 60 32)"/>
+  <rect x="244" y="86" width="8" height="8" rx="2" fill="#0d9488" transform="rotate(-14 248 90)"/>
+  <rect x="40" y="96" width="7" height="7" rx="2" fill="#e11d2b" opacity=".6" transform="rotate(30 44 100)"/>
+  <circle cx="235" cy="38" r="14" fill="#fff" stroke="#e7eaf2" stroke-width="3"/>
+  <path d="M235 31v8l5 3" stroke="#e11d2b" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="150" cy="62" r="16" fill="#f1bf9b"/>
+  <path d="M134 62 A16 16 0 0 1 166 62 Z" fill="#4a3a33"/>
+  <path d="M116 124 Q150 96 184 124 L184 136 H116 Z" fill="#e11d2b"/>
+  <rect x="122" y="100" width="56" height="32" rx="5" fill="#2b3445"/>
+  <circle cx="150" cy="116" r="4" fill="#fff" opacity=".85"/>
+  <rect x="114" y="130" width="72" height="7" rx="3.5" fill="#1f2733"/>
+  <rect x="55" y="137" width="190" height="9" rx="4.5" fill="#dbe1ee"/>
+  <rect x="68" y="146" width="8" height="36" rx="3" fill="#c8d0e2"/>
+  <rect x="224" y="146" width="8" height="36" rx="3" fill="#c8d0e2"/>
+  <path d="M87 121 q-12 -16 -2 -27 q9 11 7 27 z" fill="#1ca14d"/>
+  <path d="M90 122 q3 -17 16 -19 q-2 13 -12 20 z" fill="#23c45f"/>
+  <path d="M76 137 h24 l-3 -16 h-18 z" fill="#e8604c"/>
+  <rect x="206" y="125" width="13" height="12" rx="3" fill="#0d9488"/>
+</svg>`;
+
+// Decorative diagonal stripes (bottom of the sidebar).
+const STRIPES = `
+<svg class="stripes" viewBox="0 0 140 110" aria-hidden="true">
+  <path d="M6 110 L42 38 H62 L26 110 Z" fill="#f6b63b"/>
+  <path d="M44 110 L80 38 H100 L64 110 Z" fill="#e11d2b"/>
+  <path d="M82 110 L118 56 H136 L102 110 Z" fill="#f78f1e"/>
+</svg>`;
 
 // ---------------------------------------------------------------------------
 // State + routing
 // ---------------------------------------------------------------------------
 let me = null;
 let lastUserId = undefined;
+let clockTimer = null;
+const ui = { view: 'dashboard', search: '' };
 
 async function fetchProfile(userId) {
   for (let i = 0; i < 4; i++) {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, email, full_name, role, status')
+      .select('id, email, full_name, role, status, created_at')
       .eq('id', userId)
       .maybeSingle();
     if (error) throw error;
@@ -128,8 +202,7 @@ async function routeForSession(session) {
 }
 
 function rerenderCurrent() {
-  if (me.role === 'admin') renderAdmin();
-  else if (me.status === 'approved') renderPortal();
+  if (me.role === 'admin' || me.status === 'approved') renderShell();
   else renderStatus();
 }
 
@@ -137,17 +210,29 @@ supabase.auth.onAuthStateChange((_event, session) => {
   setTimeout(() => routeForSession(session), 0);
 });
 
+async function fetchDays(from, to) {
+  const { data, error } = await supabase
+    .from('office_days')
+    .select('day, user_id, display_name, start_time, end_time, kind')
+    .gte('day', from)
+    .lte('day', to)
+    .order('start_time', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
 // ---------------------------------------------------------------------------
 // Auth view
 // ---------------------------------------------------------------------------
 function renderAuth() {
+  clearInterval(clockTimer);
   app.innerHTML = `
     <div class="center-screen">
-      <div class="auth-card card">
+      <div class="auth-card card grad-top">
         <div style="text-align:center; margin-bottom:22px;">
           <img class="auth-logo" src="./assets/logo.png" alt="Redline" />
           <div class="brand" style="justify-content:center;"><span class="name">RED<span>LINE</span></span></div>
-          <p class="subtitle" style="margin-top:6px;">Employee Portal</p>
+          <p class="subtitle" style="margin-top:6px;">EMPLOYEE PORTAL</p>
         </div>
         <div class="tabs">
           <button id="tab-login" class="active" type="button">Sign in</button>
@@ -218,31 +303,8 @@ function renderAuth() {
 }
 
 // ---------------------------------------------------------------------------
-// Shared chrome (top bar + name editing)
+// Name editing modal + small chrome helpers
 // ---------------------------------------------------------------------------
-function topbar(extraRight = '') {
-  return `
-    <div class="topbar">
-      ${BRAND}
-      <div class="right">
-        <button class="who who-btn" id="edit-name" type="button" title="Edit your display name">
-          ${avatarHTML(me.full_name || me.email, true, 'sm')}
-          <span>${esc(firstName(me.full_name))}</span>
-          <span class="pencil">✎</span>
-        </button>
-        ${extraRight}
-        <button id="signout" class="btn ghost sm" type="button">Sign out</button>
-      </div>
-    </div>`;
-}
-
-function wireChrome() {
-  const so = document.getElementById('signout');
-  if (so) so.onclick = async () => { await supabase.auth.signOut(); };
-  const en = document.getElementById('edit-name');
-  if (en) en.onclick = openNameModal;
-}
-
 function openNameModal() {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -284,28 +346,39 @@ function openNameModal() {
   input.onkeydown = (e) => { if (e.key === 'Enter') save(); };
 }
 
+function toast(text) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = text;
+  document.body.appendChild(t);
+  requestAnimationFrame(() => t.classList.add('show'));
+  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 2600);
+}
+
 function renderStatus() {
+  clearInterval(clockTimer);
   const pending = me.status === 'pending';
   app.innerHTML = `
-    ${topbar()}
-    <div class="container">
-      <div class="card pad" style="max-width:560px; margin:40px auto; text-align:center;">
+    <div class="center-screen">
+      <div class="auth-card card grad-top" style="text-align:center;">
         <img class="auth-logo" src="./assets/logo.png" alt="Redline" style="height:46px" />
-        <div class="badge ${esc(me.status)}" style="font-size:0.85rem; margin:10px 0 14px;">${esc(me.status)}</div>
+        <div><span class="badge ${esc(me.status)}" style="font-size:0.85rem; margin:10px 0 14px;">${esc(me.status)}</span></div>
         <h1>${pending ? 'Your account is awaiting approval' : 'Account not approved'}</h1>
         <p class="subtitle" style="margin-top:8px;">
           ${pending
             ? 'An admin needs to approve your account before you can schedule office days. Check back soon!'
             : 'Your access request was denied. If you think this is a mistake, contact your administrator.'}
         </p>
+        <button id="signout" class="btn ghost full" type="button" style="margin-top:14px;">Sign out</button>
       </div>
     </div>`;
-  wireChrome();
+  document.getElementById('signout').onclick = async () => { await supabase.auth.signOut(); };
 }
 
 function renderFatal(msg) {
+  clearInterval(clockTimer);
   app.innerHTML = `
-    <div class="center-screen"><div class="auth-card card" style="text-align:center">
+    <div class="center-screen"><div class="auth-card card grad-top" style="text-align:center">
       <img class="auth-logo" src="./assets/logo.png" alt="Redline" />
       <h2>Something went wrong</h2>
       <p class="subtitle">${esc(msg)}</p>
@@ -316,7 +389,406 @@ function renderFatal(msg) {
 }
 
 // ===========================================================================
-// Employee portal — office-day scheduling
+// App shell — sidebar + topbar + view container
+// ===========================================================================
+function renderShell() {
+  clearInterval(clockTimer);
+  const isAdmin = me.role === 'admin';
+  app.innerHTML = `
+    <div class="frame">
+      <aside class="sidebar">
+        <div class="side-brand">
+          <img class="logo" src="./assets/logo.png" alt="Redline" />
+          <div>
+            <div class="name">RED<span>LINE</span></div>
+            <div class="side-sub">EMPLOYEE PORTAL</div>
+          </div>
+        </div>
+        <nav class="s-nav">
+          <button class="nav-item" data-view="dashboard" type="button">${icon('dash')}<span class="txt">Dashboard</span></button>
+          <button class="nav-item" data-view="schedule" type="button">${icon('cal')}<span class="txt">Schedule</span></button>
+          ${isAdmin ? `<button class="nav-item" data-view="team" type="button">${icon('team')}<span class="txt">Team</span><span class="nav-badge" id="nav-pending" style="display:none"></span></button>` : ''}
+          <button class="nav-item" id="nav-settings" type="button">${icon('gear')}<span class="txt">Settings</span></button>
+          <button class="nav-item" id="nav-logout" type="button">${icon('out')}<span class="txt">Logout</span></button>
+        </nav>
+        ${STRIPES}
+      </aside>
+      <div class="main">
+        <div class="topbar">
+          <label class="search">${icon('search', 'ic sm')}<input id="search-input" type="text" placeholder="Search people…" value="${esc(ui.search)}" /></label>
+          <div class="now" id="now-text"></div>
+          <button class="icon-btn" id="bell" type="button" title="Notifications">${icon('bell')}<span class="bell-badge" id="bell-badge" style="display:none"></span></button>
+          <div class="avatar-stack tb-stack" id="tb-avatars" title="In the office today"></div>
+          <button class="add-btn" id="quick-add" type="button" title="Schedule a day">${icon('plus')}</button>
+        </div>
+        <div id="view"></div>
+      </div>
+    </div>`;
+
+  document.querySelectorAll('.nav-item[data-view]').forEach((b) => {
+    b.onclick = () => setView(b.dataset.view);
+  });
+  document.getElementById('nav-settings').onclick = openNameModal;
+  document.getElementById('nav-logout').onclick = async () => { await supabase.auth.signOut(); };
+  document.getElementById('quick-add').onclick = () => gotoDay(TODAY);
+  document.getElementById('bell').onclick = () => {
+    if (isAdmin) setView('team');
+    else toast("You're all caught up 🎉");
+  };
+
+  const sin = document.getElementById('search-input');
+  sin.oninput = () => {
+    ui.search = sin.value.trim().toLowerCase();
+    if (ui.view !== 'schedule') setView('schedule');
+    else { renderCalendar(); renderPanel(); }
+  };
+  sin.onkeydown = (e) => {
+    if (e.key === 'Escape') { sin.value = ''; ui.search = ''; if (ui.view === 'schedule') { renderCalendar(); renderPanel(); } }
+  };
+
+  startClock();
+  setView(ui.view || 'dashboard');
+}
+
+function startClock() {
+  const tick = () => {
+    const el = document.getElementById('now-text');
+    if (!el) return;
+    const d = new Date();
+    el.textContent =
+      d.toLocaleDateString(undefined, { weekday: 'long' }) + ', ' +
+      d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) + ', ' +
+      d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  };
+  tick();
+  clockTimer = setInterval(tick, 30000);
+}
+
+function setView(v) {
+  if (v === 'team' && me.role !== 'admin') v = 'dashboard';
+  ui.view = v;
+  document.querySelectorAll('.nav-item[data-view]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.view === v);
+  });
+  const view = document.getElementById('view');
+  if (!view) return;
+  if (v === 'dashboard') viewDashboard(view);
+  else if (v === 'team') viewTeam(view);
+  else viewSchedule(view);
+}
+
+function gotoDay(iso) {
+  const [y, m] = iso.split('-').map(Number);
+  sched.view = { year: y, month: m - 1 };
+  sched.pendingSelect = iso;
+  setView('schedule');
+}
+
+function updateBell(count) {
+  const b = document.getElementById('bell-badge');
+  if (b) {
+    b.textContent = count;
+    b.style.display = count > 0 ? '' : 'none';
+  }
+  const n = document.getElementById('nav-pending');
+  if (n) {
+    n.textContent = count;
+    n.style.display = count > 0 ? '' : 'none';
+  }
+}
+
+function updateTopStack(rows) {
+  const el = document.getElementById('tb-avatars');
+  if (!el) return;
+  const seen = new Set();
+  const list = [];
+  for (const r of rows || []) {
+    if (r.day !== TODAY || kindOf(r) !== 'in' || seen.has(r.user_id)) continue;
+    seen.add(r.user_id);
+    list.push(r);
+  }
+  list.sort((a, b) => (a.user_id === me.id ? -1 : b.user_id === me.id ? 1 : 0));
+  el.innerHTML =
+    list.slice(0, 4).map((r) => avatarHTML(r.display_name, r.user_id === me.id, 'sm')).join('') +
+    (list.length > 4 ? `<span class="avatar sm more">+${list.length - 4}</span>` : '');
+}
+
+// ===========================================================================
+// Dashboard view
+// ===========================================================================
+const dash = {
+  view: (() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; })(),
+  gridRows: [],
+  upRows: [],
+};
+
+function viewDashboard(view) {
+  const n = new Date();
+  dash.view = { year: n.getFullYear(), month: n.getMonth() };
+  const isAdmin = me.role === 'admin';
+
+  view.innerHTML = `
+    <div class="dash">
+      <div class="dash-main">
+        <div class="card hero">
+          <div class="hero-text">
+            <h1>Welcome, <span class="hl">${esc(firstName(me.full_name || me.email))}</span></h1>
+            <p>Plan your office days, see who's around, and keep your week on track — all from one place.</p>
+            <button class="btn primary" id="hero-cta" type="button">Schedule office day</button>
+          </div>
+          ${HERO_ART}
+        </div>
+        <div class="dash-grid">
+          <div class="dash-col">
+            <div class="card pad profile-card">
+              <button class="edit-fab" id="prof-edit" type="button" title="Edit your display name">${icon('edit', 'ic sm')}</button>
+              <div class="prof-head">
+                ${avatarHTML(me.full_name || me.email, true, 'lg')}
+                <div>
+                  <div class="prof-name">${esc(me.full_name || '(no name)')}</div>
+                  <span class="badge ${esc(me.role)}">${esc(me.role)}</span>
+                </div>
+              </div>
+              <div class="prof-rows">
+                <div><span>Email</span><strong>${esc(me.email)}</strong></div>
+                <div><span>Joined</span><strong>${fmtDate((me.created_at || '').slice(0, 10)) || '—'}</strong></div>
+                <div><span>Status</span><strong style="text-transform:capitalize">${esc(me.status)}</strong></div>
+              </div>
+            </div>
+            <div class="card pad month-card">
+              <div class="card-head"><h3>This month</h3></div>
+              <div class="month-big"><span id="mc-count">–</span><span class="muted-mini" id="mc-of"></span></div>
+              <div class="bar"><i id="mc-bar" style="width:0%"></i></div>
+              <div class="mc-foot">
+                <div class="avatar-stack" id="mc-stack"></div>
+                <span class="muted-mini" id="mc-note"></span>
+              </div>
+            </div>
+          </div>
+          <div class="card pad upcoming-card">
+            <div class="card-head">
+              <h3>My schedule</h3>
+              <button class="link-btn" id="see-cal" type="button">View calendar</button>
+            </div>
+            <div id="up-list"><div class="spinner">Loading…</div></div>
+          </div>
+        </div>
+      </div>
+      <aside class="dash-side">
+        <div class="card pad mini-card">
+          <div class="mini-head">
+            <strong id="mini-title"></strong>
+            <span class="mini-nav">
+              <button id="mini-prev" type="button" aria-label="Previous month">‹</button>
+              <button id="mini-next" type="button" aria-label="Next month">›</button>
+            </span>
+          </div>
+          <div class="mini-grid" id="mini-grid"></div>
+        </div>
+        <div class="card pad today-card">
+          <div class="card-head"><h3>Who's in today</h3></div>
+          <div id="today-list"><div class="spinner">Loading…</div></div>
+        </div>
+        ${isAdmin ? `
+        <div class="card pad pending-card">
+          <div class="card-head"><h3>Pending approvals</h3></div>
+          <div id="pend-box"><div class="spinner">Loading…</div></div>
+        </div>` : ''}
+      </aside>
+    </div>`;
+
+  document.getElementById('hero-cta').onclick = () => gotoDay(TODAY);
+  document.getElementById('see-cal').onclick = () => setView('schedule');
+  document.getElementById('prof-edit').onclick = openNameModal;
+  document.getElementById('mini-prev').onclick = () => shiftMini(-1);
+  document.getElementById('mini-next').onclick = () => shiftMini(1);
+
+  loadDashboard();
+}
+
+async function loadDashboard() {
+  const cells = gridCells(dash.view.year, dash.view.month);
+  try {
+    [dash.gridRows, dash.upRows] = await Promise.all([
+      fetchDays(toISO(cells[0]), toISO(cells[41])),
+      fetchDays(TODAY, addDaysISO(TODAY, 60)),
+    ]);
+  } catch (err) {
+    const el = document.getElementById('up-list');
+    if (el) el.innerHTML = `<div class="empty">Couldn't load schedule: ${esc(err.message)}</div>`;
+    return;
+  }
+  renderMini();
+  renderUpcoming();
+  renderTodayCard();
+  renderMonthCard();
+  updateTopStack(dash.upRows);
+  if (me.role === 'admin') loadPendingCard();
+}
+
+async function shiftMini(delta) {
+  let m = dash.view.month + delta;
+  let y = dash.view.year;
+  if (m < 0) { m = 11; y--; }
+  if (m > 11) { m = 0; y++; }
+  dash.view = { year: y, month: m };
+  const cells = gridCells(y, m);
+  try {
+    dash.gridRows = await fetchDays(toISO(cells[0]), toISO(cells[41]));
+  } catch { dash.gridRows = []; }
+  renderMini();
+}
+
+function renderMini() {
+  const title = document.getElementById('mini-title');
+  const grid = document.getElementById('mini-grid');
+  if (!title || !grid) return;
+  title.textContent = `${MONTHS[dash.view.month].slice(0, 3)} ${dash.view.year}`;
+
+  const byDay = new Map();
+  for (const r of dash.gridRows) {
+    if (!byDay.has(r.day)) byDay.set(r.day, []);
+    byDay.get(r.day).push(r);
+  }
+
+  let html = DOW1.map((d) => `<span class="mini-dow">${d}</span>`).join('');
+  for (const d of gridCells(dash.view.year, dash.view.month)) {
+    const iso = toISO(d);
+    const inMonth = d.getMonth() === dash.view.month;
+    const list = byDay.get(iso) || [];
+    const meHas = list.some((r) => r.user_id === me.id);
+    const cls = ['mini-day'];
+    if (!inMonth) cls.push('out');
+    if (iso === TODAY) cls.push('today');
+    html += `<button type="button" class="${cls.join(' ')}" data-day="${iso}">${d.getDate()}${
+      list.length ? `<span class="dt${meHas ? '' : ' other'}"></span>` : ''
+    }</button>`;
+  }
+  grid.innerHTML = html;
+  grid.querySelectorAll('.mini-day').forEach((b) => {
+    b.onclick = () => gotoDay(b.dataset.day);
+  });
+}
+
+function renderUpcoming() {
+  const el = document.getElementById('up-list');
+  if (!el) return;
+  const mine = dash.upRows
+    .filter((r) => r.user_id === me.id)
+    .sort((a, b) => a.day.localeCompare(b.day))
+    .slice(0, 5);
+
+  if (!mine.length) {
+    el.innerHTML = `
+      <div class="empty" style="padding:14px 2px;">Nothing scheduled yet.</div>
+      <button class="btn ghost full" id="up-add" type="button">+ Schedule a day</button>`;
+    const b = document.getElementById('up-add');
+    if (b) b.onclick = () => gotoDay(TODAY);
+    return;
+  }
+
+  el.innerHTML = mine.map((r) => {
+    const d = new Date(`${r.day}T00:00:00`);
+    const k = kindOf(r);
+    const title = k === 'in' ? 'In office' : k === 'vacation' ? 'Vacation' : 'Sick day';
+    const sub = k === 'in'
+      ? (r.start_time ? fmtRangePlain(r.start_time, r.end_time) : 'no hours set')
+      : d.toLocaleDateString(undefined, { weekday: 'long' });
+    const pill = k === 'in' ? 'IN' : k === 'vacation' ? 'VACATION' : 'SICK';
+    return `
+      <button class="up-row" data-day="${r.day}" type="button">
+        <span class="up-date"><span class="up-num">${d.getDate()}</span><span class="up-mon">${MONTHS[d.getMonth()].slice(0, 3).toUpperCase()} ${d.getFullYear()}</span></span>
+        <span class="up-info"><span class="up-title">${title}</span><span class="up-sub">${sub}</span></span>
+        <span class="pill ${k}">${pill}</span>
+      </button>`;
+  }).join('');
+
+  el.querySelectorAll('.up-row').forEach((b) => {
+    b.onclick = () => gotoDay(b.dataset.day);
+  });
+}
+
+function renderTodayCard() {
+  const el = document.getElementById('today-list');
+  if (!el) return;
+  const today = dash.upRows.filter((r) => r.day === TODAY).sort(entrySort);
+  const ins = today.filter((r) => kindOf(r) === 'in');
+  const outs = today.filter((r) => kindOf(r) !== 'in');
+
+  const inHTML = ins.length
+    ? ins.slice(0, 6).map((r) => {
+        const meFlag = r.user_id === me.id;
+        return `<div class="att">${avatarHTML(r.display_name, meFlag)}<span class="att-name">${esc(r.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${
+          r.start_time ? `<span class="att-hours">${esc(fmtCompactRange(r.start_time, r.end_time))}</span>` : ''
+        }</div>`;
+      }).join('') + (ins.length > 6 ? `<div class="muted-mini" style="padding:4px 2px">+${ins.length - 6} more</div>` : '')
+    : '<div class="empty" style="padding:8px 2px;">No one yet — be the first!</div>';
+
+  const outHTML = outs.length
+    ? `<div class="out-line">${outs.map((r) => `${KIND_EMOJI[kindOf(r)]} ${esc(shortName(r.display_name))}`).join(' · ')}</div>`
+    : '';
+
+  el.innerHTML = inHTML + outHTML;
+}
+
+function renderMonthCard() {
+  const count = document.getElementById('mc-count');
+  if (!count) return;
+  const n = new Date();
+  const y = n.getFullYear(), m = n.getMonth();
+  const monthRows = dash.gridRows.filter((r) => {
+    const [ry, rm] = r.day.split('-').map(Number);
+    return ry === y && rm - 1 === m;
+  });
+  const myIn = monthRows.filter((r) => r.user_id === me.id && kindOf(r) === 'in').length;
+  const wd = workdaysInMonth(y, m);
+
+  count.textContent = myIn;
+  document.getElementById('mc-of').textContent = ` of ${wd} workdays in office`;
+  document.getElementById('mc-bar').style.width = `${Math.min(100, Math.round((myIn / wd) * 100))}%`;
+
+  const seen = new Set();
+  const mates = [];
+  for (const r of monthRows) {
+    if (seen.has(r.user_id)) continue;
+    seen.add(r.user_id);
+    mates.push(r);
+  }
+  mates.sort((a, b) => (a.user_id === me.id ? -1 : b.user_id === me.id ? 1 : 0));
+  document.getElementById('mc-stack').innerHTML =
+    mates.slice(0, 5).map((r) => avatarHTML(r.display_name, r.user_id === me.id, 'sm')).join('') +
+    (mates.length > 5 ? `<span class="avatar sm more">+${mates.length - 5}</span>` : '');
+  document.getElementById('mc-note').textContent = mates.length
+    ? `${mates.length} ${mates.length === 1 ? 'person' : 'people'} active this month`
+    : 'no activity yet this month';
+}
+
+async function loadPendingCard() {
+  const box = document.getElementById('pend-box');
+  if (!box) return;
+  const { data, count, error } = await supabase
+    .from('profiles')
+    .select('id, full_name, email', { count: 'exact' })
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+    .limit(3);
+  if (error) { box.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+
+  updateBell(count || 0);
+  if (!count) {
+    box.innerHTML = '<div class="empty" style="padding:8px 2px;">No pending requests 🎉</div>';
+    return;
+  }
+  box.innerHTML = `
+    <div class="pend-count"><span class="big">${count}</span><span class="muted-mini">waiting for approval</span></div>
+    ${data.map((u) => `<div class="att">${avatarHTML(u.full_name || u.email, false)}<span class="att-name">${esc(u.full_name || u.email)}</span></div>`).join('')}
+    <button class="btn primary full sm" id="pend-review" type="button" style="margin-top:12px;">Review requests</button>`;
+  const b = document.getElementById('pend-review');
+  if (b) b.onclick = () => setView('team');
+}
+
+// ===========================================================================
+// Schedule view — office-day scheduling
 // ===========================================================================
 const sched = {
   view: (() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; })(),
@@ -337,38 +809,31 @@ function entrySort(a, b) {
   return (a.display_name || '').localeCompare(b.display_name || '');
 }
 
-function renderPortal() {
-  const adminBtn = me.role === 'admin'
-    ? '<button id="go-admin" class="btn ghost sm" type="button">Admin</button>' : '';
-  app.innerHTML = `
-    ${topbar(adminBtn)}
-    <div class="container">
-      <div class="page-head">
-        <div>
-          <h1>Office schedule</h1>
-          <p class="subtitle" style="margin:2px 0 0;">Tap any day to mark yourself in (with hours), on vacation, or off sick.</p>
-        </div>
+function viewSchedule(view) {
+  panelEditing = false;
+  view.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1>Office schedule</h1>
+        <p class="subtitle" style="margin:2px 0 0;">Tap any day to mark yourself in (with hours), on vacation, or off sick.</p>
       </div>
-      <div id="stats" class="stats"></div>
-      <div class="cal-toolbar">
-        <div class="cal-month-title" id="cal-title"></div>
-        <div class="cal-nav">
-          <button class="btn ghost sm" id="prev" type="button" aria-label="Previous month">‹</button>
-          <button class="btn ghost sm" id="today-btn" type="button">Today</button>
-          <button class="btn ghost sm" id="next" type="button" aria-label="Next month">›</button>
-        </div>
+    </div>
+    <div id="stats" class="stats"></div>
+    <div class="cal-toolbar">
+      <div class="cal-month-title" id="cal-title"></div>
+      <div class="cal-nav">
+        <button class="btn ghost sm" id="prev" type="button" aria-label="Previous month">‹</button>
+        <button class="btn ghost sm" id="today-btn" type="button">Today</button>
+        <button class="btn ghost sm" id="next" type="button" aria-label="Next month">›</button>
       </div>
-      <div class="sched">
-        <div class="cal-card card">
-          <div class="cal-grid dow-row">${DOW.map((d) => `<div class="dow">${d}</div>`).join('')}</div>
-          <div class="cal-grid month-grid" id="grid"><div class="spinner" style="grid-column:1/-1">Loading…</div></div>
-        </div>
-        <div id="day-panel"></div>
+    </div>
+    <div class="sched">
+      <div class="cal-card card">
+        <div class="cal-grid dow-row">${DOW.map((d) => `<div class="dow">${d}</div>`).join('')}</div>
+        <div class="cal-grid month-grid" id="grid"><div class="spinner" style="grid-column:1/-1">Loading…</div></div>
       </div>
+      <div id="day-panel"></div>
     </div>`;
-  wireChrome();
-  const ga = document.getElementById('go-admin');
-  if (ga) ga.onclick = () => renderAdmin();
   document.getElementById('prev').onclick = () => shiftMonth(-1);
   document.getElementById('next').onclick = () => shiftMonth(1);
   document.getElementById('today-btn').onclick = () => {
@@ -378,17 +843,6 @@ function renderPortal() {
     loadSchedule();
   };
   loadSchedule();
-}
-
-function buildGrid() {
-  const first = new Date(sched.view.year, sched.view.month, 1);
-  const offset = (first.getDay() + 6) % 7;
-  const start = new Date(sched.view.year, sched.view.month, 1 - offset);
-  const cells = [];
-  for (let i = 0; i < 42; i++) {
-    cells.push(new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
-  }
-  return cells;
 }
 
 function indexRows() {
@@ -410,20 +864,16 @@ function shiftMonth(delta) {
 }
 
 async function loadSchedule() {
-  sched.cells = buildGrid();
+  sched.cells = gridCells(sched.view.year, sched.view.month);
   const from = toISO(sched.cells[0]);
   const to = toISO(sched.cells[sched.cells.length - 1]);
 
-  const { data, error } = await supabase
-    .from('office_days')
-    .select('day, user_id, display_name, start_time, end_time, kind')
-    .gte('day', from)
-    .lte('day', to)
-    .order('start_time', { ascending: true });
-
-  if (error) {
+  let data;
+  try {
+    data = await fetchDays(from, to);
+  } catch (err) {
     const grid = document.getElementById('grid');
-    if (grid) grid.innerHTML = `<div class="empty" style="grid-column:1/-1">Couldn't load schedule: ${esc(error.message)}</div>`;
+    if (grid) grid.innerHTML = `<div class="empty" style="grid-column:1/-1">Couldn't load schedule: ${esc(err.message)}</div>`;
     return;
   }
   sched.rows = data;
@@ -439,6 +889,7 @@ function renderAll() {
   renderStats();
   renderCalendar();
   renderPanel();
+  updateTopStack(sched.rows);
 }
 
 function statCard(label, value, sub, id) {
@@ -491,6 +942,9 @@ function renderStats() {
   };
 }
 
+const matchesSearch = (a) =>
+  !ui.search || (a.display_name || '').toLowerCase().includes(ui.search);
+
 function renderCalendar() {
   const title = document.getElementById('cal-title');
   if (title) title.textContent = `${MONTHS[sched.view.month]} ${sched.view.year}`;
@@ -529,7 +983,8 @@ function renderCalendar() {
         body = `${KIND_EMOJI[k]} ${esc(label)}`;
         tip = `${a.display_name} · ${KIND_LABEL[k]}`;
       }
-      return `<span class="evt ${k}${meFlag ? ' me' : ''}" title="${esc(tip)}"><span class="dot" style="background:${dot}"></span><span class="evt-body">${body}</span></span>`;
+      const dim = matchesSearch(a) ? '' : ' dim';
+      return `<span class="evt ${k}${meFlag ? ' me' : ''}${dim}" title="${esc(tip)}"><span class="dot" style="background:${dot}"></span><span class="evt-body">${body}</span></span>`;
     }).join('');
     const more = list.length > 3 ? `<span class="evt more"><span class="evt-body">+${list.length - 3}</span></span>` : '';
 
@@ -580,7 +1035,8 @@ function renderPanel() {
         } else {
           detail = `<span class="att-tag ${k}">${KIND_EMOJI[k]} ${KIND_LABEL[k]}</span>`;
         }
-        return `<div class="att">${avatarHTML(a.display_name, meFlag)}<span class="att-name">${esc(a.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${detail}</div>`;
+        const dim = matchesSearch(a) ? '' : ' dim';
+        return `<div class="att${dim}">${avatarHTML(a.display_name, meFlag)}<span class="att-name">${esc(a.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${detail}</div>`;
       }).join('')
     : '<div class="empty" style="padding:10px 2px">Nobody scheduled yet.</div>';
 
@@ -733,31 +1189,30 @@ async function removeMe(iso) {
 }
 
 // ===========================================================================
-// Admin dashboard
+// Team view (admin)
 // ===========================================================================
-function renderAdmin() {
-  app.innerHTML = `
-    ${topbar('<button id="go-portal" class="btn ghost sm" type="button">My schedule</button>')}
-    <div class="container">
-      <h1>Admin dashboard</h1>
-      <p class="subtitle">Review access requests and manage employees.</p>
-      <div id="admin-msg" class="msg"></div>
-      <div class="section">
-        <div class="section-head"><h2 style="margin:0">Pending approvals <span id="pending-count" class="count-pill"></span></h2></div>
-        <div class="card pad"><div id="pending"><div class="spinner">Loading…</div></div></div>
+function viewTeam(view) {
+  view.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1>Team</h1>
+        <p class="subtitle" style="margin:2px 0 0;">Review access requests and manage employees.</p>
       </div>
-      <div class="section">
-        <div class="section-head"><h2 style="margin:0">All employees</h2></div>
-        <div class="card pad" style="overflow-x:auto">
-          <table>
-            <thead><tr><th>Name</th><th class="hide-sm">Email</th><th>Role</th><th>Status</th><th class="hide-sm">Joined</th><th>Actions</th></tr></thead>
-            <tbody id="users-body"><tr><td colspan="6" class="spinner">Loading…</td></tr></tbody>
-          </table>
-        </div>
+    </div>
+    <div id="admin-msg" class="msg"></div>
+    <div class="section" style="margin-top:18px;">
+      <div class="section-head"><h2 style="margin:0">Pending approvals <span id="pending-count" class="count-pill"></span></h2></div>
+      <div class="card pad"><div id="pending"><div class="spinner">Loading…</div></div></div>
+    </div>
+    <div class="section">
+      <div class="section-head"><h2 style="margin:0">All employees</h2></div>
+      <div class="card pad" style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Name</th><th class="hide-sm">Email</th><th>Role</th><th>Status</th><th class="hide-sm">Joined</th><th>Actions</th></tr></thead>
+          <tbody id="users-body"><tr><td colspan="6" class="spinner">Loading…</td></tr></tbody>
+        </table>
       </div>
     </div>`;
-  wireChrome();
-  document.getElementById('go-portal').onclick = () => renderPortal();
   loadUsers();
 }
 
@@ -785,6 +1240,7 @@ async function loadUsers() {
   }
 
   const pending = users.filter((u) => u.status === 'pending');
+  updateBell(pending.length);
   document.getElementById('pending-count').textContent = pending.length ? `(${pending.length})` : '';
   pendingEl.innerHTML = pending.length
     ? pending.map((u) => `
@@ -826,7 +1282,7 @@ async function loadUsers() {
 
 app.addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-act]');
-  if (!btn) return;
+  if (!btn || !me) return;
   const { act, id } = btn.dataset;
   if (id === me.id && (act === 'deny' || act === 'make-employee')) {
     adminFlash("You can't change your own admin access.", 'error');
