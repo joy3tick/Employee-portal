@@ -27,6 +27,13 @@ const esc = (s) =>
 
 const firstName = (name) => (name || '').trim().split(/\s+/)[0] || 'Someone';
 
+function shortName(name) {
+  const p = (name || '').trim().split(/\s+/).filter(Boolean);
+  if (!p.length) return 'Someone';
+  if (p.length === 1) return p[0];
+  return `${p[0]} ${p[p.length - 1][0]}.`;
+}
+
 function initials(name) {
   const parts = (name || '').trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '?';
@@ -34,16 +41,16 @@ function initials(name) {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-// Deterministic color per person, so each colleague keeps the same avatar hue.
-function avatarColor(name) {
+// Deterministic color per person, so each colleague keeps the same hue.
+function personColor(name) {
   let h = 0;
   const s = name || '';
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return `hsl(${h % 360} 52% 42%)`;
+  return `hsl(${h % 360} 55% 45%)`;
 }
 
 function avatarHTML(name, isMe, cls = '') {
-  const bg = isMe ? 'var(--accent)' : avatarColor(name);
+  const bg = isMe ? 'var(--accent)' : personColor(name);
   return `<span class="avatar${isMe ? ' me' : ''} ${cls}" style="background:${bg}" title="${esc(name)}">${esc(initials(name))}</span>`;
 }
 
@@ -94,6 +101,10 @@ async function routeForSession(session) {
     renderFatal('Your profile could not be loaded. Make sure supabase/schema.sql has been run.');
     return;
   }
+  rerenderCurrent();
+}
+
+function rerenderCurrent() {
   if (me.role === 'admin') renderAdmin();
   else if (me.status === 'approved') renderPortal();
   else renderStatus();
@@ -176,7 +187,7 @@ function renderAuth() {
     });
     btn.disabled = false;
     if (error) { showMsg(error.message); return; }
-    if (data.session) return; // signed in → routing takes over
+    if (data.session) return;
     signupForm.reset();
     selectTab(true);
     showMsg('Account created! Check your email to confirm, then wait for admin approval.', 'success');
@@ -184,22 +195,71 @@ function renderAuth() {
 }
 
 // ---------------------------------------------------------------------------
-// Shared chrome
+// Shared chrome (top bar + name editing)
 // ---------------------------------------------------------------------------
 function topbar(extraRight = '') {
   return `
     <div class="topbar">
       ${BRAND}
       <div class="right">
-        <span class="who">Signed in as <strong>${esc(firstName(me.full_name))}</strong></span>
+        <button class="who who-btn" id="edit-name" type="button" title="Edit your display name">
+          ${avatarHTML(me.full_name || me.email, true, 'sm')}
+          <span>${esc(firstName(me.full_name))}</span>
+          <span class="pencil">✎</span>
+        </button>
         ${extraRight}
         <button id="signout" class="btn ghost sm" type="button">Sign out</button>
       </div>
     </div>`;
 }
-function wireSignout() {
-  const b = document.getElementById('signout');
-  if (b) b.onclick = async () => { await supabase.auth.signOut(); };
+
+function wireChrome() {
+  const so = document.getElementById('signout');
+  if (so) so.onclick = async () => { await supabase.auth.signOut(); };
+  const en = document.getElementById('edit-name');
+  if (en) en.onclick = openNameModal;
+}
+
+function openNameModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal card pad">
+      <h2 style="margin-bottom:4px;">Edit your name</h2>
+      <p class="subtitle" style="margin-bottom:16px;">This is how you appear on the schedule.</p>
+      <div id="nm-msg" class="msg"></div>
+      <label>Display name</label>
+      <input id="nm-input" type="text" maxlength="60" value="${esc(me.full_name || '')}" />
+      <div style="display:flex; gap:10px; margin-top:18px; justify-content:flex-end;">
+        <button class="btn ghost" id="nm-cancel" type="button">Cancel</button>
+        <button class="btn primary" id="nm-save" type="button">Save</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  const input = overlay.querySelector('#nm-input');
+  const msg = overlay.querySelector('#nm-msg');
+  const saveBtn = overlay.querySelector('#nm-save');
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('#nm-cancel').onclick = close;
+  input.focus();
+  input.select();
+
+  const save = async () => {
+    const name = input.value.trim();
+    if (name.length < 1) { msg.textContent = 'Name cannot be empty.'; msg.className = 'msg show error'; return; }
+    saveBtn.disabled = true;
+    const { error } = await supabase.from('profiles').update({ full_name: name }).eq('id', me.id);
+    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
+    // Keep the denormalized name on our own office_days in sync (best effort).
+    await supabase.from('office_days').update({ display_name: name }).eq('user_id', me.id);
+    me.full_name = name;
+    close();
+    rerenderCurrent();
+  };
+  saveBtn.onclick = save;
+  input.onkeydown = (e) => { if (e.key === 'Enter') save(); };
 }
 
 function renderStatus() {
@@ -218,7 +278,7 @@ function renderStatus() {
         </p>
       </div>
     </div>`;
-  wireSignout();
+  wireChrome();
 }
 
 function renderFatal(msg) {
@@ -229,7 +289,8 @@ function renderFatal(msg) {
       <p class="subtitle">${esc(msg)}</p>
       <button id="signout" class="btn ghost full" type="button">Sign out</button>
     </div></div>`;
-  wireSignout();
+  const so = document.getElementById('signout');
+  if (so) so.onclick = async () => { await supabase.auth.signOut(); };
 }
 
 // ===========================================================================
@@ -240,7 +301,6 @@ const sched = {
   cells: [],
   rows: [],
   byDay: new Map(),
-  maxCount: 0,
   selectedDay: null,
   pendingSelect: null,
 };
@@ -261,21 +321,20 @@ function renderPortal() {
       <div class="cal-toolbar">
         <div class="cal-month-title" id="cal-title"></div>
         <div class="cal-nav">
-          <button class="btn ghost sm" id="prev" type="button">‹</button>
+          <button class="btn ghost sm" id="prev" type="button" aria-label="Previous month">‹</button>
           <button class="btn ghost sm" id="today-btn" type="button">Today</button>
-          <button class="btn ghost sm" id="next" type="button">›</button>
+          <button class="btn ghost sm" id="next" type="button" aria-label="Next month">›</button>
         </div>
       </div>
       <div class="sched">
-        <div class="card pad">
+        <div class="cal-card card">
           <div class="cal-grid dow-row">${DOW.map((d) => `<div class="dow">${d}</div>`).join('')}</div>
-          <div class="cal-grid" id="grid"><div class="spinner" style="grid-column:1/-1">Loading…</div></div>
-          <div class="heat-legend" id="heat-legend"></div>
+          <div class="cal-grid month-grid" id="grid"><div class="spinner" style="grid-column:1/-1">Loading…</div></div>
         </div>
         <div id="day-panel"></div>
       </div>
     </div>`;
-  wireSignout();
+  wireChrome();
   const ga = document.getElementById('go-admin');
   if (ga) ga.onclick = () => renderAdmin();
   document.getElementById('prev').onclick = () => shiftMonth(-1);
@@ -302,14 +361,11 @@ function buildGrid() {
 
 function indexRows() {
   const m = new Map();
-  let mx = 0;
   for (const r of sched.rows) {
     if (!m.has(r.day)) m.set(r.day, []);
     m.get(r.day).push(r);
   }
-  for (const [, list] of m) mx = Math.max(mx, list.length);
   sched.byDay = m;
-  sched.maxCount = mx;
 }
 
 function shiftMonth(delta) {
@@ -410,39 +466,35 @@ function renderCalendar() {
   for (const d of sched.cells) {
     const iso = toISO(d);
     const inMonth = d.getMonth() === sched.view.month;
-    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
     const list = sched.byDay.get(iso) || [];
     const mine = list.some((a) => a.user_id === me.id);
-    const ratio = sched.maxCount ? list.length / sched.maxCount : 0;
 
     const cell = document.createElement('div');
     cell.className = 'cell'
       + (inMonth ? '' : ' muted')
-      + (isWeekend ? ' weekend' : '')
       + (iso === TODAY ? ' today' : '')
       + (iso < TODAY ? ' past' : '')
       + (mine ? ' mine' : '')
       + (iso === sched.selectedDay ? ' selected' : '');
-    cell.style.setProperty('--ratio', ratio.toFixed(3));
 
-    const avs = list.slice(0, 3).map((a) => avatarHTML(a.display_name, a.user_id === me.id)).join('');
-    const more = list.length > 3 ? `<span class="avatar more">+${list.length - 3}</span>` : '';
+    // Show "You" first, then others alphabetically.
+    const ordered = list.slice().sort((a, b) => {
+      if (a.user_id === me.id) return -1;
+      if (b.user_id === me.id) return 1;
+      return (a.display_name || '').localeCompare(b.display_name || '');
+    });
+    const chips = ordered.slice(0, 3).map((a) => {
+      const meFlag = a.user_id === me.id;
+      const dot = meFlag ? '#fff' : personColor(a.display_name);
+      return `<span class="evt${meFlag ? ' me' : ''}"><span class="dot" style="background:${dot}"></span>${esc(meFlag ? 'You' : shortName(a.display_name))}</span>`;
+    }).join('');
+    const more = list.length > 3 ? `<span class="evt more">+${list.length - 3} more</span>` : '';
 
     cell.innerHTML = `
-      <div class="cell-top">
-        <span class="num">${d.getDate()}</span>
-        ${list.length ? `<span class="cnt">${list.length}</span>` : ''}
-      </div>
-      <div class="avatar-stack">${avs}${more}</div>`;
+      <div class="cell-top"><span class="num">${d.getDate()}</span></div>
+      <div class="evts">${chips}${more}</div>`;
     cell.onclick = () => selectDay(iso);
     grid.appendChild(cell);
-  }
-
-  const hl = document.getElementById('heat-legend');
-  if (hl) {
-    hl.innerHTML = sched.maxCount
-      ? `<span class="muted-mini">Quieter</span><span class="heat-scale"></span><span class="muted-mini">Busier (up to ${sched.maxCount})</span>`
-      : '<span class="muted-mini">No office days booked this month yet.</span>';
   }
 }
 
@@ -505,7 +557,6 @@ async function toggleMe(iso) {
   const wasMine = (sched.byDay.get(iso) || []).some((a) => a.user_id === me.id);
   const myRow = { day: iso, user_id: me.id, display_name: me.full_name || me.email };
 
-  // Optimistic update for instant feedback.
   sched.rows = wasMine
     ? sched.rows.filter((r) => !(r.day === iso && r.user_id === me.id))
     : sched.rows.concat([myRow]);
@@ -517,11 +568,10 @@ async function toggleMe(iso) {
     ({ error } = await supabase.from('office_days').delete().eq('user_id', me.id).eq('day', iso));
   } else {
     ({ error } = await supabase.from('office_days').insert(myRow));
-    if (error && error.code === '23505') error = null; // already booked
+    if (error && error.code === '23505') error = null;
   }
 
   if (error) {
-    // Revert on failure.
     sched.rows = wasMine
       ? sched.rows.concat([myRow])
       : sched.rows.filter((r) => !(r.day === iso && r.user_id === me.id));
@@ -555,7 +605,7 @@ function renderAdmin() {
         </div>
       </div>
     </div>`;
-  wireSignout();
+  wireChrome();
   document.getElementById('go-portal').onclick = () => renderPortal();
   loadUsers();
 }

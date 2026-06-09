@@ -112,3 +112,41 @@ create policy office_days_insert_own on public.office_days for insert
   with check (user_id = auth.uid() and public.is_approved());
 create policy office_days_delete_own on public.office_days for delete
   using (user_id = auth.uid());
+
+-- ---------------------------------------------------------------------------
+-- Let users edit their OWN profile (e.g. their display name) — but NOT their
+-- role or status. A BEFORE UPDATE trigger freezes the sensitive columns for
+-- non-admins, so a self-update can only really change full_name. This is what
+-- keeps "edit your name" from becoming "make yourself an approved admin".
+-- ---------------------------------------------------------------------------
+drop policy if exists profiles_update_own on public.profiles;
+create policy profiles_update_own on public.profiles for update
+  using (id = auth.uid()) with check (id = auth.uid());
+
+create or replace function public.protect_profile_columns()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    new.id     := old.id;
+    new.email  := old.email;
+    new.role   := old.role;
+    new.status := old.status;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_profile_columns on public.profiles;
+create trigger protect_profile_columns
+  before update on public.profiles
+  for each row execute function public.protect_profile_columns();
+
+-- Allow users to keep the denormalized name on their own office_days in sync
+-- when they rename themselves.
+drop policy if exists office_days_update_own on public.office_days;
+create policy office_days_update_own on public.office_days for update
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
