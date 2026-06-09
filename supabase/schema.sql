@@ -37,6 +37,10 @@ create table if not exists public.office_days (
 );
 -- In case an older version of this table already exists:
 alter table public.office_days add column if not exists display_name text not null default '';
+-- Hours the person will be in the office (open 24/7, so any time is valid;
+-- end <= start means an overnight shift into the next day).
+alter table public.office_days add column if not exists start_time time;
+alter table public.office_days add column if not exists end_time   time;
 
 create index if not exists office_days_day_idx     on public.office_days (day);
 create index if not exists office_days_user_id_idx on public.office_days (user_id);

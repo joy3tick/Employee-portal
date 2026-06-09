@@ -214,6 +214,33 @@ td .actions, .pending-row .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .panel-count .big { font-size: 1.9rem; font-weight: 800; display: block; line-height: 1; color: var(--accent); }
 .att-list { margin-top: 16px; display: flex; flex-direction: column; gap: 11px; max-height: 360px; overflow: auto; }
 .att { display: flex; align-items: center; gap: 10px; font-size: 0.92rem; }
+.att-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-hours { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
+
+/* ---- Hours booking form ---- */
+.hours-row { display: flex; gap: 10px; }
+.hours-row > div { flex: 1; }
+.hours-row label { font-size: 0.75rem; }
+input[type="time"] {
+  width: 100%; padding: 9px 10px; border-radius: 9px; border: 1px solid var(--border);
+  background: #fff; color: var(--text); font-size: 0.95rem; outline: none;
+}
+input[type="time"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.presets { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.chip-btn {
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+  border-radius: 999px; padding: 4px 11px; font-size: 0.78rem; font-weight: 600; cursor: pointer;
+}
+.chip-btn:hover { background: var(--surface-2); color: var(--text); }
+.form-actions { display: flex; gap: 10px; margin-top: 14px; }
+.form-actions .btn { flex: 1; }
+.yb-hours {
+  background: var(--accent-soft); border: 1px solid rgba(225, 29, 43, 0.22);
+  border-radius: 9px; padding: 11px 13px; font-size: 0.92rem; margin-bottom: 12px;
+}
+.yb-hours strong { color: var(--accent); }
+.evt-t { font-weight: 700; opacity: 0.8; }
+.evt.me .evt-t { opacity: 1; }
 
 .spinner { color: var(--muted); padding: 40px; text-align: center; }
 

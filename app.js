@@ -41,7 +41,6 @@ function initials(name) {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-// Deterministic color per person, so each colleague keeps the same hue.
 function personColor(name) {
   let h = 0;
   const s = name || '';
@@ -58,6 +57,25 @@ function fmtDate(iso) {
   if (!iso) return '';
   return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
+
+// ---- Time formatting (values arrive as "HH:MM" or "HH:MM:SS") ----
+const hhmm = (t) => String(t || '').slice(0, 5);
+function fmt12(t) {
+  const [H, M] = hhmm(t).split(':').map(Number);
+  const ap = H < 12 ? 'AM' : 'PM';
+  const h = H % 12 === 0 ? 12 : H % 12;
+  return `${h}:${pad(M)} ${ap}`;
+}
+function fmtCompact(t) {
+  const [H, M] = hhmm(t).split(':').map(Number);
+  const ap = H < 12 ? 'a' : 'p';
+  const h = H % 12 === 0 ? 12 : H % 12;
+  return M ? `${h}:${pad(M)}${ap}` : `${h}${ap}`;
+}
+const isOvernight = (s, e) => hhmm(e) <= hhmm(s);
+const fmtRange = (s, e) => `${fmt12(s)} – ${fmt12(e)}${isOvernight(s, e) ? ' <span class="muted-mini">(next day)</span>' : ''}`;
+const fmtRangePlain = (s, e) => `${fmt12(s)} – ${fmt12(e)}${isOvernight(s, e) ? ' (next day)' : ''}`;
+const fmtCompactRange = (s, e) => `${fmtCompact(s)}–${fmtCompact(e)}`;
 
 const LOGO = '<img class="logo" src="./assets/logo.png" alt="Redline" />';
 const BRAND = `<span class="brand">${LOGO}<span class="name">RED<span>LINE</span></span></span>`;
@@ -252,7 +270,6 @@ function openNameModal() {
     saveBtn.disabled = true;
     const { error } = await supabase.from('profiles').update({ full_name: name }).eq('id', me.id);
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-    // Keep the denormalized name on our own office_days in sync (best effort).
     await supabase.from('office_days').update({ display_name: name }).eq('user_id', me.id);
     me.full_name = name;
     close();
@@ -304,6 +321,7 @@ const sched = {
   selectedDay: null,
   pendingSelect: null,
 };
+let panelEditing = false; // showing the hours form for an already-booked day?
 
 function renderPortal() {
   const adminBtn = me.role === 'admin'
@@ -314,7 +332,7 @@ function renderPortal() {
       <div class="page-head">
         <div>
           <h1>Office schedule</h1>
-          <p class="subtitle" style="margin:2px 0 0;">Tap any day to see who's in, then add or remove yourself.</p>
+          <p class="subtitle" style="margin:2px 0 0;">Tap any day to see who's in, then book the hours you'll be there.</p>
         </div>
       </div>
       <div id="stats" class="stats"></div>
@@ -384,10 +402,10 @@ async function loadSchedule() {
 
   const { data, error } = await supabase
     .from('office_days')
-    .select('day, user_id, display_name')
+    .select('day, user_id, display_name, start_time, end_time')
     .gte('day', from)
     .lte('day', to)
-    .order('day', { ascending: true });
+    .order('start_time', { ascending: true });
 
   if (error) {
     const grid = document.getElementById('grid');
@@ -477,16 +495,18 @@ function renderCalendar() {
       + (mine ? ' mine' : '')
       + (iso === sched.selectedDay ? ' selected' : '');
 
-    // Show "You" first, then others alphabetically.
     const ordered = list.slice().sort((a, b) => {
       if (a.user_id === me.id) return -1;
       if (b.user_id === me.id) return 1;
-      return (a.display_name || '').localeCompare(b.display_name || '');
+      return hhmm(a.start_time).localeCompare(hhmm(b.start_time)) || (a.display_name || '').localeCompare(b.display_name || '');
     });
     const chips = ordered.slice(0, 3).map((a) => {
       const meFlag = a.user_id === me.id;
       const dot = meFlag ? '#fff' : personColor(a.display_name);
-      return `<span class="evt${meFlag ? ' me' : ''}"><span class="dot" style="background:${dot}"></span>${esc(meFlag ? 'You' : shortName(a.display_name))}</span>`;
+      const label = meFlag ? 'You' : shortName(a.display_name);
+      const t = a.start_time ? `<span class="evt-t">${esc(fmtCompactRange(a.start_time, a.end_time))}</span> ` : '';
+      const tip = a.start_time ? `${a.display_name} · ${fmtRangePlain(a.start_time, a.end_time)}` : a.display_name;
+      return `<span class="evt${meFlag ? ' me' : ''}" title="${esc(tip)}"><span class="dot" style="background:${dot}"></span>${t}${esc(label)}</span>`;
     }).join('');
     const more = list.length > 3 ? `<span class="evt more">+${list.length - 3} more</span>` : '';
 
@@ -499,6 +519,7 @@ function renderCalendar() {
 }
 
 function selectDay(iso) {
+  panelEditing = false;
   const [y, m] = iso.split('-').map(Number);
   if (y !== sched.view.year || m - 1 !== sched.view.month) {
     sched.view = { year: y, month: m - 1 };
@@ -521,20 +542,55 @@ function renderPanel() {
   const list = (sched.byDay.get(iso) || []).slice().sort((a, b) => {
     if (a.user_id === me.id) return -1;
     if (b.user_id === me.id) return 1;
-    return (a.display_name || '').localeCompare(b.display_name || '');
+    return hhmm(a.start_time).localeCompare(hhmm(b.start_time)) || (a.display_name || '').localeCompare(b.display_name || '');
   });
-  const mine = list.some((a) => a.user_id === me.id);
+  const myRow = list.find((a) => a.user_id === me.id);
+  const mine = !!myRow;
 
   const attendeeHTML = list.length
     ? list.map((a) => {
         const meFlag = a.user_id === me.id;
-        return `<div class="att">${avatarHTML(a.display_name, meFlag)}<span>${esc(a.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span></div>`;
+        const hrs = a.start_time
+          ? `<span class="att-hours">${esc(fmtRangePlain(a.start_time, a.end_time))}</span>`
+          : '<span class="att-hours muted-mini">no hours set</span>';
+        return `<div class="att">${avatarHTML(a.display_name, meFlag)}<span class="att-name">${esc(a.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${hrs}</div>`;
       }).join('')
     : '<div class="empty" style="padding:10px 2px">Nobody scheduled yet.</div>';
 
-  const action = isPast
-    ? '<button class="btn ghost full" type="button" disabled>This day has passed</button>'
-    : `<button class="btn ${mine ? 'danger' : 'primary'} full" id="toggle-me" type="button">${mine ? '✕ Remove me from this day' : "✓ I'll be in the office"}</button>`;
+  let actionHTML;
+  if (isPast) {
+    actionHTML = '<button class="btn ghost full" type="button" disabled>This day has passed</button>';
+  } else if (!mine || panelEditing) {
+    const ds = myRow && myRow.start_time ? hhmm(myRow.start_time) : '09:00';
+    const de = myRow && myRow.end_time ? hhmm(myRow.end_time) : '17:00';
+    actionHTML = `
+      <div class="hours-form">
+        <div class="hours-row">
+          <div><label>From</label><input type="time" id="h-start" value="${ds}" required></div>
+          <div><label>To</label><input type="time" id="h-end" value="${de}" required></div>
+        </div>
+        <div class="presets">
+          <button type="button" class="chip-btn" data-preset="09:00|17:00">9–5</button>
+          <button type="button" class="chip-btn" data-preset="08:00|16:00">8–4</button>
+          <button type="button" class="chip-btn" data-preset="00:00|23:59">All day</button>
+        </div>
+        <p class="muted-mini" style="margin:8px 0 0;">Open 24/7 — any hours are fine, overnight too.</p>
+        <div id="h-msg" class="msg"></div>
+        <div class="form-actions">
+          ${mine ? '<button class="btn ghost" type="button" id="h-cancel">Cancel</button>' : ''}
+          <button class="btn primary" type="button" id="h-save">${mine ? 'Save hours' : "✓ I'll be in"}</button>
+        </div>
+      </div>`;
+  } else {
+    actionHTML = `
+      <div class="your-booking">
+        <div class="yb-hours">You're in <strong>${fmtRange(myRow.start_time, myRow.end_time)}</strong></div>
+        <div class="form-actions">
+          <button class="btn ghost" type="button" id="edit-hours">Edit hours</button>
+          <button class="btn danger" type="button" id="remove-me">Remove me</button>
+        </div>
+      </div>`;
+  }
 
   panel.innerHTML = `
     <div class="card pad panel">
@@ -545,36 +601,85 @@ function renderPanel() {
         </div>
         <div class="panel-count"><span class="big">${list.length}</span><span class="muted-mini">in office</span></div>
       </div>
-      ${action}
+      ${actionHTML}
       <div class="att-list">${attendeeHTML}</div>
     </div>`;
 
-  const t = document.getElementById('toggle-me');
-  if (t) t.onclick = () => toggleMe(iso);
+  panel.querySelectorAll('.chip-btn').forEach((b) => {
+    b.onclick = () => {
+      const [s, e] = b.dataset.preset.split('|');
+      panel.querySelector('#h-start').value = s;
+      panel.querySelector('#h-end').value = e;
+    };
+  });
+  const saveBtn = panel.querySelector('#h-save');
+  if (saveBtn) saveBtn.onclick = () => {
+    const s = panel.querySelector('#h-start').value;
+    const e = panel.querySelector('#h-end').value;
+    const msg = panel.querySelector('#h-msg');
+    if (!s || !e) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
+    if (s === e) { msg.textContent = "Start and end times can't be the same."; msg.className = 'msg show error'; return; }
+    if (mine) updateHours(iso, s, e); else addMe(iso, s, e);
+  };
+  const cancelBtn = panel.querySelector('#h-cancel');
+  if (cancelBtn) cancelBtn.onclick = () => { panelEditing = false; renderPanel(); };
+  const editBtn = panel.querySelector('#edit-hours');
+  if (editBtn) editBtn.onclick = () => { panelEditing = true; renderPanel(); };
+  const rmBtn = panel.querySelector('#remove-me');
+  if (rmBtn) rmBtn.onclick = () => removeMe(iso);
 }
 
-async function toggleMe(iso) {
-  const wasMine = (sched.byDay.get(iso) || []).some((a) => a.user_id === me.id);
-  const myRow = { day: iso, user_id: me.id, display_name: me.full_name || me.email };
-
-  sched.rows = wasMine
-    ? sched.rows.filter((r) => !(r.day === iso && r.user_id === me.id))
-    : sched.rows.concat([myRow]);
+async function addMe(iso, start, end) {
+  panelEditing = false;
+  const row = { day: iso, user_id: me.id, display_name: me.full_name || me.email, start_time: start, end_time: end };
+  sched.rows = sched.rows.concat([row]);
   indexRows();
   renderAll();
 
-  let error;
-  if (wasMine) {
-    ({ error } = await supabase.from('office_days').delete().eq('user_id', me.id).eq('day', iso));
-  } else {
-    ({ error } = await supabase.from('office_days').insert(myRow));
-    if (error && error.code === '23505') error = null;
+  let { error } = await supabase.from('office_days').insert(row);
+  if (error && error.code === '23505') {
+    ({ error } = await supabase.from('office_days')
+      .update({ start_time: start, end_time: end, display_name: row.display_name })
+      .eq('user_id', me.id).eq('day', iso));
   }
-
   if (error) {
-    sched.rows = wasMine
-      ? sched.rows.concat([myRow])
-      : sched.rows.filter((r) => !(r.day === iso && r.user_id === me.id));
+    sched.rows = sched.rows.filter((r) => !(r.day === iso && r.user_id === me.id));
+    indexRows();
+    renderAll();
+    alert(error.message);
+  }
+}
+
+async function updateHours(iso, start, end) {
+  panelEditing = false;
+  const prev = (sched.byDay.get(iso) || []).find((a) => a.user_id === me.id);
+  const prevS = prev && prev.start_time;
+  const prevE = prev && prev.end_time;
+  sched.rows = sched.rows.map((r) =>
+    (r.day === iso && r.user_id === me.id) ? { ...r, start_time: start, end_time: end } : r);
+  indexRows();
+  renderAll();
+
+  const { error } = await supabase.from('office_days')
+    .update({ start_time: start, end_time: end }).eq('user_id', me.id).eq('day', iso);
+  if (error) {
+    sched.rows = sched.rows.map((r) =>
+      (r.day === iso && r.user_id === me.id) ? { ...r, start_time: prevS, end_time: prevE } : r);
+    indexRows();
+    renderAll();
+    alert(error.message);
+  }
+}
+
+async function removeMe(iso) {
+  const prev = (sched.byDay.get(iso) || []).find((a) => a.user_id === me.id);
+  sched.rows = sched.rows.filter((r) => !(r.day === iso && r.user_id === me.id));
+  indexRows();
+  renderAll();
+
+  const { error } = await supabase.from('office_days').delete().eq('user_id', me.id).eq('day', iso);
+  if (error && prev) {
+    sched.rows = sched.rows.concat([prev]);
     indexRows();
     renderAll();
     alert(error.message);
