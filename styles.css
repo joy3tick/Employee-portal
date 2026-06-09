@@ -178,7 +178,7 @@ td .actions, .pending-row .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .cell {
   position: relative; min-height: 108px; background: var(--surface);
   padding: 6px 7px; display: flex; flex-direction: column; gap: 4px;
-  cursor: pointer; transition: background 0.12s;
+  cursor: pointer; transition: background 0.12s; overflow: hidden;
 }
 .cell:hover { background: #f3f5f9; }
 .cell.muted { background: #fafbfc; }
@@ -196,7 +196,7 @@ td .actions, .pending-row .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 }
 
 /* attendee "events" (Google-style chips) */
-.evts { display: flex; flex-direction: column; gap: 3px; overflow: hidden; }
+.evts { display: flex; flex-direction: column; gap: 3px; overflow: hidden; min-width: 0; }
 .evt {
   display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 0.72rem; line-height: 1.25;
   padding: 2px 6px; border-radius: 5px; background: var(--surface-2); color: var(--text);
