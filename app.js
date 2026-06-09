@@ -517,15 +517,21 @@ function renderCalendar() {
       const meFlag = a.user_id === me.id;
       const k = kindOf(a);
       const label = meFlag ? 'You' : shortName(a.display_name);
+      const dot = k === 'in'
+        ? (meFlag ? 'var(--accent)' : personColor(a.display_name))
+        : (k === 'vacation' ? 'var(--vac)' : 'var(--amber)');
+      let body, tip;
       if (k === 'in') {
-        const dot = meFlag ? '#fff' : personColor(a.display_name);
         const t = a.start_time ? `<span class="evt-t">${esc(fmtCompactRange(a.start_time, a.end_time))}</span> ` : '';
-        const tip = a.start_time ? `${a.display_name} · ${fmtRangePlain(a.start_time, a.end_time)}` : a.display_name;
-        return `<span class="evt${meFlag ? ' me' : ''}" title="${esc(tip)}"><span class="dot" style="background:${dot}"></span>${t}${esc(label)}</span>`;
+        body = `${t}${esc(label)}`;
+        tip = a.start_time ? `${a.display_name} · ${fmtRangePlain(a.start_time, a.end_time)}` : a.display_name;
+      } else {
+        body = `${KIND_EMOJI[k]} ${esc(label)}`;
+        tip = `${a.display_name} · ${KIND_LABEL[k]}`;
       }
-      return `<span class="evt ${k}" title="${esc(`${a.display_name} · ${KIND_LABEL[k]}`)}">${KIND_EMOJI[k]} ${esc(label)}</span>`;
+      return `<span class="evt ${k}${meFlag ? ' me' : ''}" title="${esc(tip)}"><span class="dot" style="background:${dot}"></span><span class="evt-body">${body}</span></span>`;
     }).join('');
-    const more = list.length > 3 ? `<span class="evt more">+${list.length - 3} more</span>` : '';
+    const more = list.length > 3 ? `<span class="evt more"><span class="evt-body">+${list.length - 3}</span></span>` : '';
 
     cell.innerHTML = `
       <div class="cell-top"><span class="num">${d.getDate()}</span></div>
