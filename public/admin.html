@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Redline Portal — Admin</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="topbar">
+    <a href="/admin.html" class="brand" style="color:inherit">
+      <span class="mark"></span>
+      <span class="name">RED<span>LINE</span></span>
+      <span class="badge admin" style="margin-left:6px">Admin</span>
+    </a>
+    <div class="right">
+      <span id="who" class="who"></span>
+      <a class="btn ghost sm" href="/portal.html">My schedule</a>
+      <button id="logout" class="btn ghost sm" type="button">Sign out</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <h1>Admin dashboard</h1>
+    <p class="subtitle">Review access requests and manage employees.</p>
+
+    <div id="message" class="msg"></div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2 style="margin:0">Pending approvals <span id="pending-count" class="count-pill"></span></h2>
+      </div>
+      <div class="card pad">
+        <div id="pending">
+          <div class="spinner">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2 style="margin:0">All employees</h2>
+      </div>
+      <div class="card pad" style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th class="hide-sm">Email</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th class="hide-sm">Joined</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="users-body">
+            <tr><td colspan="6" class="spinner">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/js/admin.js"></script>
+</body>
+</html>

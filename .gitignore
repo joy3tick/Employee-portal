@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets — NEVER commit your real keys
+.env
+.env.local
+
+# Logs / OS cruft
+*.log
+npm-debug.log*
+.DS_Store

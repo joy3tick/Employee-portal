@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Redline Portal</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="topbar">
+    <a href="/portal.html" class="brand" style="color:inherit">
+      <span class="mark"></span>
+      <span class="name">RED<span>LINE</span></span>
+    </a>
+    <div class="right">
+      <span id="who" class="who"></span>
+      <a id="admin-link" class="btn ghost sm" href="/admin.html" style="display:none">Admin</a>
+      <button id="logout" class="btn ghost sm" type="button">Sign out</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div id="content">
+      <div class="spinner">Loading…</div>
+    </div>
+  </div>
+
+  <script type="module" src="/js/portal.js"></script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Redline Portal — Sign in</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="center-screen">
+    <div class="auth-card card">
+      <div style="text-align:center; margin-bottom: 22px;">
+        <span class="brand" style="justify-content:center;">
+          <span class="mark"></span>
+          <span class="name">RED<span>LINE</span></span>
+        </span>
+        <p class="subtitle" style="margin-top:8px;">Employee Portal</p>
+      </div>
+
+      <div class="tabs">
+        <button id="tab-login" class="active" type="button">Sign in</button>
+        <button id="tab-signup" type="button">Create account</button>
+      </div>
+
+      <div id="message" class="msg"></div>
+
+      <!-- Sign in -->
+      <form id="login-form" class="stack" autocomplete="on">
+        <div>
+          <label for="login-email">Email</label>
+          <input id="login-email" name="email" type="email" required autocomplete="email" />
+        </div>
+        <div>
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" required autocomplete="current-password" />
+        </div>
+        <button class="btn primary full" type="submit">Sign in</button>
+      </form>
+
+      <!-- Sign up -->
+      <form id="signup-form" class="stack" style="display:none;" autocomplete="on">
+        <div>
+          <label for="signup-name">Full name</label>
+          <input id="signup-name" name="name" type="text" required autocomplete="name" />
+        </div>
+        <div>
+          <label for="signup-email">Email</label>
+          <input id="signup-email" name="email" type="email" required autocomplete="email" />
+        </div>
+        <div>
+          <label for="signup-password">Password <span style="opacity:.7">(min 8 characters)</span></label>
+          <input id="signup-password" name="password" type="password" required minlength="8" autocomplete="new-password" />
+        </div>
+        <button class="btn primary full" type="submit">Request access</button>
+        <p class="subtitle" style="margin:4px 0 0; font-size:0.82rem;">
+          New accounts need admin approval before you can sign in.
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <script type="module" src="/js/auth.js"></script>
+</body>
+</html>
