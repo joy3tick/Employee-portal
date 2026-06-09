@@ -13,6 +13,8 @@
   --green-soft: rgba(28, 161, 77, 0.12);
   --amber: #b9770a;
   --amber-soft: rgba(185, 119, 10, 0.14);
+  --vac: #0d9488;
+  --vac-soft: rgba(13, 148, 136, 0.12);
   --radius: 12px;
   --shadow: 0 6px 22px rgba(23, 33, 54, 0.06);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -241,6 +243,29 @@ input[type="time"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
 .yb-hours strong { color: var(--accent); }
 .evt-t { font-weight: 700; opacity: 0.8; }
 .evt.me .evt-t { opacity: 1; }
+
+/* ---- In / Vacation / Sick ---- */
+.kind-select { display: flex; gap: 6px; margin-bottom: 12px; }
+.kind-opt {
+  flex: 1; padding: 8px 4px; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 9px; cursor: pointer; font-size: 0.8rem; font-weight: 600; color: var(--muted);
+}
+.kind-opt:hover { background: var(--surface-2); }
+.kind-opt.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.kind-opt[data-kind="vacation"].active { background: var(--vac-soft); border-color: var(--vac); color: var(--vac); }
+.kind-opt[data-kind="sick"].active { background: var(--amber-soft); border-color: var(--amber); color: var(--amber); }
+
+.evt.vacation { background: var(--vac-soft); color: var(--vac); font-weight: 700; }
+.evt.sick { background: var(--amber-soft); color: var(--amber); font-weight: 700; }
+
+.att-tag { font-size: 0.78rem; font-weight: 700; white-space: nowrap; }
+.att-tag.vacation { color: var(--vac); }
+.att-tag.sick { color: var(--amber); }
+
+.yb-vacation { background: var(--vac-soft); border-color: rgba(13, 148, 136, 0.25); }
+.yb-vacation strong { color: var(--vac); }
+.yb-sick { background: var(--amber-soft); border-color: rgba(185, 119, 10, 0.25); }
+.yb-sick strong { color: var(--amber); }
 
 .spinner { color: var(--muted); padding: 40px; text-align: center; }
 

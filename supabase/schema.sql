@@ -41,6 +41,11 @@ alter table public.office_days add column if not exists display_name text not nu
 -- end <= start means an overnight shift into the next day).
 alter table public.office_days add column if not exists start_time time;
 alter table public.office_days add column if not exists end_time   time;
+-- Whether the person is in the office, on vacation, or off sick that day.
+-- (start_time/end_time only apply when kind = 'in'.)
+alter table public.office_days
+  add column if not exists kind text not null default 'in'
+  check (kind in ('in', 'vacation', 'sick'));
 
 create index if not exists office_days_day_idx     on public.office_days (day);
 create index if not exists office_days_user_id_idx on public.office_days (user_id);

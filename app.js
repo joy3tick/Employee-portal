@@ -21,6 +21,11 @@ const MONTHS = ['January','February','March','April','May','June','July','August
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']; // Monday-first
 const WD_PLURAL = ['Sundays','Mondays','Tuesdays','Wednesdays','Thursdays','Fridays','Saturdays'];
 
+const KIND_LABEL = { in: 'In office', vacation: 'On vacation', sick: 'Off sick' };
+const KIND_EMOJI = { in: '🏢', vacation: '🌴', sick: '🤒' };
+const KIND_RANK = { in: 0, vacation: 1, sick: 2 };
+const kindOf = (a) => a.kind || 'in';
+
 const esc = (s) =>
   String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -321,7 +326,16 @@ const sched = {
   selectedDay: null,
   pendingSelect: null,
 };
-let panelEditing = false; // showing the hours form for an already-booked day?
+let panelEditing = false; // showing the entry form for an already-marked day?
+
+function entrySort(a, b) {
+  if (a.user_id === me.id) return -1;
+  if (b.user_id === me.id) return 1;
+  const ka = KIND_RANK[kindOf(a)], kb = KIND_RANK[kindOf(b)];
+  if (ka !== kb) return ka - kb;
+  if (kindOf(a) === 'in') return hhmm(a.start_time).localeCompare(hhmm(b.start_time));
+  return (a.display_name || '').localeCompare(b.display_name || '');
+}
 
 function renderPortal() {
   const adminBtn = me.role === 'admin'
@@ -332,7 +346,7 @@ function renderPortal() {
       <div class="page-head">
         <div>
           <h1>Office schedule</h1>
-          <p class="subtitle" style="margin:2px 0 0;">Tap any day to see who's in, then book the hours you'll be there.</p>
+          <p class="subtitle" style="margin:2px 0 0;">Tap any day to mark yourself in (with hours), on vacation, or off sick.</p>
         </div>
       </div>
       <div id="stats" class="stats"></div>
@@ -402,7 +416,7 @@ async function loadSchedule() {
 
   const { data, error } = await supabase
     .from('office_days')
-    .select('day, user_id, display_name, start_time, end_time')
+    .select('day, user_id, display_name, start_time, end_time, kind')
     .gte('day', from)
     .lte('day', to)
     .order('start_time', { ascending: true });
@@ -444,24 +458,27 @@ function renderStats() {
     const [y, m] = r.day.split('-').map(Number);
     return y === sched.view.year && m - 1 === sched.view.month;
   });
-  const myMonth = monthRows.filter((r) => r.user_id === me.id).length;
-  const teamMonth = monthRows.length;
-  const todayList = sched.byDay.get(TODAY) || [];
+  const myInMonth = monthRows.filter((r) => r.user_id === me.id && kindOf(r) === 'in').length;
+  const todayAll = sched.byDay.get(TODAY) || [];
+  const todayIn = todayAll.filter((a) => kindOf(a) === 'in');
+  const todayVac = todayAll.filter((a) => kindOf(a) === 'vacation').length;
+  const todaySick = todayAll.filter((a) => kindOf(a) === 'sick').length;
 
   const dow = [0, 0, 0, 0, 0, 0, 0];
-  for (const r of monthRows) dow[new Date(`${r.day}T00:00:00`).getDay()]++;
+  for (const r of monthRows) if (kindOf(r) === 'in') dow[new Date(`${r.day}T00:00:00`).getDay()]++;
   let bestWd = -1, bestN = 0;
   for (let i = 0; i < 7; i++) if (dow[i] > bestN) { bestN = dow[i]; bestWd = i; }
 
   const todayAvatars =
-    todayList.slice(0, 5).map((a) => avatarHTML(a.display_name, a.user_id === me.id, 'sm')).join('') +
-    (todayList.length > 5 ? `<span class="avatar sm more">+${todayList.length - 5}</span>` : '');
+    todayIn.slice(0, 5).map((a) => avatarHTML(a.display_name, a.user_id === me.id, 'sm')).join('') +
+    (todayIn.length > 5 ? `<span class="avatar sm more">+${todayIn.length - 5}</span>` : '');
+  const outTotal = todayVac + todaySick;
 
   el.innerHTML = `
-    ${statCard('In office today', todayList.length, `<div class="avatar-stack">${todayAvatars || '<span class="muted-mini">No one yet — be the first</span>'}</div>`, 'today')}
-    ${statCard('You this month', myMonth, `<span class="muted-mini">day${myMonth === 1 ? '' : 's'} booked</span>`)}
-    ${statCard('Team days booked', teamMonth, '<span class="muted-mini">across the month</span>')}
-    ${statCard('Most popular', bestWd >= 0 ? WD_PLURAL[bestWd] : '—', bestWd >= 0 ? `<span class="muted-mini">${bestN} visit${bestN === 1 ? '' : 's'}</span>` : '<span class="muted-mini">no bookings yet</span>')}`;
+    ${statCard('In office today', todayIn.length, `<div class="avatar-stack">${todayAvatars || '<span class="muted-mini">No one yet — be the first</span>'}</div>`, 'today')}
+    ${statCard('Out today', outTotal, `<span class="muted-mini">${outTotal ? `${todayVac} on vacation · ${todaySick} sick` : 'everyone\'s in'}</span>`)}
+    ${statCard('You this month', myInMonth, `<span class="muted-mini">in-office day${myInMonth === 1 ? '' : 's'}</span>`)}
+    ${statCard('Most popular', bestWd >= 0 ? WD_PLURAL[bestWd] : '—', bestWd >= 0 ? `<span class="muted-mini">${bestN} in-office visit${bestN === 1 ? '' : 's'}</span>` : '<span class="muted-mini">no bookings yet</span>')}`;
 
   const tc = document.getElementById('stat-today');
   if (tc) tc.onclick = () => {
@@ -495,18 +512,18 @@ function renderCalendar() {
       + (mine ? ' mine' : '')
       + (iso === sched.selectedDay ? ' selected' : '');
 
-    const ordered = list.slice().sort((a, b) => {
-      if (a.user_id === me.id) return -1;
-      if (b.user_id === me.id) return 1;
-      return hhmm(a.start_time).localeCompare(hhmm(b.start_time)) || (a.display_name || '').localeCompare(b.display_name || '');
-    });
+    const ordered = list.slice().sort(entrySort);
     const chips = ordered.slice(0, 3).map((a) => {
       const meFlag = a.user_id === me.id;
-      const dot = meFlag ? '#fff' : personColor(a.display_name);
+      const k = kindOf(a);
       const label = meFlag ? 'You' : shortName(a.display_name);
-      const t = a.start_time ? `<span class="evt-t">${esc(fmtCompactRange(a.start_time, a.end_time))}</span> ` : '';
-      const tip = a.start_time ? `${a.display_name} · ${fmtRangePlain(a.start_time, a.end_time)}` : a.display_name;
-      return `<span class="evt${meFlag ? ' me' : ''}" title="${esc(tip)}"><span class="dot" style="background:${dot}"></span>${t}${esc(label)}</span>`;
+      if (k === 'in') {
+        const dot = meFlag ? '#fff' : personColor(a.display_name);
+        const t = a.start_time ? `<span class="evt-t">${esc(fmtCompactRange(a.start_time, a.end_time))}</span> ` : '';
+        const tip = a.start_time ? `${a.display_name} · ${fmtRangePlain(a.start_time, a.end_time)}` : a.display_name;
+        return `<span class="evt${meFlag ? ' me' : ''}" title="${esc(tip)}"><span class="dot" style="background:${dot}"></span>${t}${esc(label)}</span>`;
+      }
+      return `<span class="evt ${k}" title="${esc(`${a.display_name} · ${KIND_LABEL[k]}`)}">${KIND_EMOJI[k]} ${esc(label)}</span>`;
     }).join('');
     const more = list.length > 3 ? `<span class="evt more">+${list.length - 3} more</span>` : '';
 
@@ -539,21 +556,25 @@ function renderPanel() {
   const dObj = new Date(`${iso}T00:00:00`);
   const isPast = iso < TODAY;
   const isToday = iso === TODAY;
-  const list = (sched.byDay.get(iso) || []).slice().sort((a, b) => {
-    if (a.user_id === me.id) return -1;
-    if (b.user_id === me.id) return 1;
-    return hhmm(a.start_time).localeCompare(hhmm(b.start_time)) || (a.display_name || '').localeCompare(b.display_name || '');
-  });
+  const list = (sched.byDay.get(iso) || []).slice().sort(entrySort);
   const myRow = list.find((a) => a.user_id === me.id);
   const mine = !!myRow;
+  const inCount = list.filter((a) => kindOf(a) === 'in').length;
+  const outCount = list.length - inCount;
 
   const attendeeHTML = list.length
     ? list.map((a) => {
         const meFlag = a.user_id === me.id;
-        const hrs = a.start_time
-          ? `<span class="att-hours">${esc(fmtRangePlain(a.start_time, a.end_time))}</span>`
-          : '<span class="att-hours muted-mini">no hours set</span>';
-        return `<div class="att">${avatarHTML(a.display_name, meFlag)}<span class="att-name">${esc(a.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${hrs}</div>`;
+        const k = kindOf(a);
+        let detail;
+        if (k === 'in') {
+          detail = a.start_time
+            ? `<span class="att-hours">${esc(fmtRangePlain(a.start_time, a.end_time))}</span>`
+            : '<span class="att-hours muted-mini">no hours set</span>';
+        } else {
+          detail = `<span class="att-tag ${k}">${KIND_EMOJI[k]} ${KIND_LABEL[k]}</span>`;
+        }
+        return `<div class="att">${avatarHTML(a.display_name, meFlag)}<span class="att-name">${esc(a.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${detail}</div>`;
       }).join('')
     : '<div class="empty" style="padding:10px 2px">Nobody scheduled yet.</div>';
 
@@ -561,32 +582,44 @@ function renderPanel() {
   if (isPast) {
     actionHTML = '<button class="btn ghost full" type="button" disabled>This day has passed</button>';
   } else if (!mine || panelEditing) {
+    const curKind = (panelEditing && myRow) ? kindOf(myRow) : 'in';
     const ds = myRow && myRow.start_time ? hhmm(myRow.start_time) : '09:00';
     const de = myRow && myRow.end_time ? hhmm(myRow.end_time) : '17:00';
     actionHTML = `
-      <div class="hours-form">
-        <div class="hours-row">
-          <div><label>From</label><input type="time" id="h-start" value="${ds}" required></div>
-          <div><label>To</label><input type="time" id="h-end" value="${de}" required></div>
+      <div class="entry-form">
+        <div class="kind-select">
+          <button type="button" class="kind-opt${curKind === 'in' ? ' active' : ''}" data-kind="in">🏢 In</button>
+          <button type="button" class="kind-opt${curKind === 'vacation' ? ' active' : ''}" data-kind="vacation">🌴 Vacation</button>
+          <button type="button" class="kind-opt${curKind === 'sick' ? ' active' : ''}" data-kind="sick">🤒 Sick</button>
         </div>
-        <div class="presets">
-          <button type="button" class="chip-btn" data-preset="09:00|17:00">9–5</button>
-          <button type="button" class="chip-btn" data-preset="08:00|16:00">8–4</button>
-          <button type="button" class="chip-btn" data-preset="00:00|23:59">All day</button>
+        <div class="hours-wrap"${curKind === 'in' ? '' : ' style="display:none"'}>
+          <div class="hours-row">
+            <div><label>From</label><input type="time" id="h-start" value="${ds}"></div>
+            <div><label>To</label><input type="time" id="h-end" value="${de}"></div>
+          </div>
+          <div class="presets">
+            <button type="button" class="chip-btn" data-preset="09:00|17:00">9–5</button>
+            <button type="button" class="chip-btn" data-preset="08:00|16:00">8–4</button>
+            <button type="button" class="chip-btn" data-preset="00:00|23:59">All day</button>
+          </div>
+          <p class="muted-mini" style="margin:8px 0 0;">Open 24/7 — any hours, overnight too.</p>
         </div>
-        <p class="muted-mini" style="margin:8px 0 0;">Open 24/7 — any hours are fine, overnight too.</p>
         <div id="h-msg" class="msg"></div>
         <div class="form-actions">
           ${mine ? '<button class="btn ghost" type="button" id="h-cancel">Cancel</button>' : ''}
-          <button class="btn primary" type="button" id="h-save">${mine ? 'Save hours' : "✓ I'll be in"}</button>
+          <button class="btn primary" type="button" id="h-save">Save</button>
         </div>
       </div>`;
   } else {
+    const k = kindOf(myRow);
+    const summary = k === 'in'
+      ? `You're in <strong>${fmtRange(myRow.start_time, myRow.end_time)}</strong>`
+      : `${KIND_EMOJI[k]} You're <strong>${k === 'vacation' ? 'on vacation' : 'off sick'}</strong>`;
     actionHTML = `
       <div class="your-booking">
-        <div class="yb-hours">You're in <strong>${fmtRange(myRow.start_time, myRow.end_time)}</strong></div>
+        <div class="yb-hours yb-${k}">${summary}</div>
         <div class="form-actions">
-          <button class="btn ghost" type="button" id="edit-hours">Edit hours</button>
+          <button class="btn ghost" type="button" id="edit-hours">Change</button>
           <button class="btn danger" type="button" id="remove-me">Remove me</button>
         </div>
       </div>`;
@@ -599,12 +632,20 @@ function renderPanel() {
           <div class="panel-weekday">${dObj.toLocaleDateString(undefined, { weekday: 'long' })} ${isToday ? '<span class="badge today-badge">Today</span>' : ''}</div>
           <div class="panel-date">${dObj.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</div>
         </div>
-        <div class="panel-count"><span class="big">${list.length}</span><span class="muted-mini">in office</span></div>
+        <div class="panel-count"><span class="big">${inCount}</span><span class="muted-mini">in office${outCount ? ` · ${outCount} out` : ''}</span></div>
       </div>
       ${actionHTML}
       <div class="att-list">${attendeeHTML}</div>
     </div>`;
 
+  panel.querySelectorAll('.kind-opt').forEach((b) => {
+    b.onclick = () => {
+      panel.querySelectorAll('.kind-opt').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+      const hw = panel.querySelector('.hours-wrap');
+      if (hw) hw.style.display = b.dataset.kind === 'in' ? '' : 'none';
+    };
+  });
   panel.querySelectorAll('.chip-btn').forEach((b) => {
     b.onclick = () => {
       const [s, e] = b.dataset.preset.split('|');
@@ -614,12 +655,17 @@ function renderPanel() {
   });
   const saveBtn = panel.querySelector('#h-save');
   if (saveBtn) saveBtn.onclick = () => {
-    const s = panel.querySelector('#h-start').value;
-    const e = panel.querySelector('#h-end').value;
+    const kind = panel.querySelector('.kind-opt.active').dataset.kind;
     const msg = panel.querySelector('#h-msg');
-    if (!s || !e) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
-    if (s === e) { msg.textContent = "Start and end times can't be the same."; msg.className = 'msg show error'; return; }
-    if (mine) updateHours(iso, s, e); else addMe(iso, s, e);
+    if (kind === 'in') {
+      const s = panel.querySelector('#h-start').value;
+      const e = panel.querySelector('#h-end').value;
+      if (!s || !e) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
+      if (s === e) { msg.textContent = "Start and end times can't be the same."; msg.className = 'msg show error'; return; }
+      saveEntry(iso, 'in', s, e);
+    } else {
+      saveEntry(iso, kind, null, null);
+    }
   };
   const cancelBtn = panel.querySelector('#h-cancel');
   if (cancelBtn) cancelBtn.onclick = () => { panelEditing = false; renderPanel(); };
@@ -629,42 +675,36 @@ function renderPanel() {
   if (rmBtn) rmBtn.onclick = () => removeMe(iso);
 }
 
-async function addMe(iso, start, end) {
+async function saveEntry(iso, kind, start, end) {
   panelEditing = false;
-  const row = { day: iso, user_id: me.id, display_name: me.full_name || me.email, start_time: start, end_time: end };
-  sched.rows = sched.rows.concat([row]);
+  const wasMine = (sched.byDay.get(iso) || []).some((a) => a.user_id === me.id);
+  const row = {
+    day: iso,
+    user_id: me.id,
+    display_name: me.full_name || me.email,
+    kind,
+    start_time: kind === 'in' ? start : null,
+    end_time: kind === 'in' ? end : null,
+  };
+  const snapshot = sched.rows;
+  sched.rows = wasMine
+    ? sched.rows.map((r) => (r.day === iso && r.user_id === me.id) ? { ...r, ...row } : r)
+    : sched.rows.concat([row]);
   indexRows();
   renderAll();
 
-  let { error } = await supabase.from('office_days').insert(row);
-  if (error && error.code === '23505') {
-    ({ error } = await supabase.from('office_days')
-      .update({ start_time: start, end_time: end, display_name: row.display_name })
-      .eq('user_id', me.id).eq('day', iso));
+  const payload = { kind, start_time: row.start_time, end_time: row.end_time, display_name: row.display_name };
+  let error;
+  if (wasMine) {
+    ({ error } = await supabase.from('office_days').update(payload).eq('user_id', me.id).eq('day', iso));
+  } else {
+    ({ error } = await supabase.from('office_days').insert(row));
+    if (error && error.code === '23505') {
+      ({ error } = await supabase.from('office_days').update(payload).eq('user_id', me.id).eq('day', iso));
+    }
   }
   if (error) {
-    sched.rows = sched.rows.filter((r) => !(r.day === iso && r.user_id === me.id));
-    indexRows();
-    renderAll();
-    alert(error.message);
-  }
-}
-
-async function updateHours(iso, start, end) {
-  panelEditing = false;
-  const prev = (sched.byDay.get(iso) || []).find((a) => a.user_id === me.id);
-  const prevS = prev && prev.start_time;
-  const prevE = prev && prev.end_time;
-  sched.rows = sched.rows.map((r) =>
-    (r.day === iso && r.user_id === me.id) ? { ...r, start_time: start, end_time: end } : r);
-  indexRows();
-  renderAll();
-
-  const { error } = await supabase.from('office_days')
-    .update({ start_time: start, end_time: end }).eq('user_id', me.id).eq('day', iso);
-  if (error) {
-    sched.rows = sched.rows.map((r) =>
-      (r.day === iso && r.user_id === me.id) ? { ...r, start_time: prevS, end_time: prevE } : r);
+    sched.rows = snapshot;
     indexRows();
     renderAll();
     alert(error.message);
