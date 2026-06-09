@@ -64,6 +64,7 @@ update public.profiles set role = 'admin', status = 'approved' where email = 'so
 ├── config.js           # public Supabase URL + anon key
 ├── styles.css          # Redline theme
 ├── app.js              # the whole app: auth, approval, calendar, admin
+├── assets/logo.png     # Redline logo — favicon + in-app branding
 ├── vercel.json         # tells Vercel to serve the folder as a static site
 ├── supabase/schema.sql # run this once in the Supabase SQL editor
 └── README.md

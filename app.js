@@ -19,7 +19,7 @@ const toISO = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDat
 const TODAY = toISO(new Date());
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']; // Monday-first
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const WD_PLURAL = ['Sundays','Mondays','Tuesdays','Wednesdays','Thursdays','Fridays','Saturdays'];
 
 const esc = (s) =>
   String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
@@ -27,23 +27,41 @@ const esc = (s) =>
 
 const firstName = (name) => (name || '').trim().split(/\s+/)[0] || 'Someone';
 
-function fmtDate(iso) {
-  if (!iso) return '';
-  return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+function initials(name) {
+  const parts = (name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-const BRAND = '<span class="brand"><span class="mark"></span><span class="name">RED<span>LINE</span></span></span>';
+// Deterministic color per person, so each colleague keeps the same avatar hue.
+function avatarColor(name) {
+  let h = 0;
+  const s = name || '';
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360} 52% 42%)`;
+}
+
+function avatarHTML(name, isMe, cls = '') {
+  const bg = isMe ? 'var(--accent)' : avatarColor(name);
+  return `<span class="avatar${isMe ? ' me' : ''} ${cls}" style="background:${bg}" title="${esc(name)}">${esc(initials(name))}</span>`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+const LOGO = '<img class="logo" src="./assets/logo.png" alt="Redline" />';
+const BRAND = `<span class="brand">${LOGO}<span class="name">RED<span>LINE</span></span></span>`;
 
 // ---------------------------------------------------------------------------
 // State + routing
 // ---------------------------------------------------------------------------
-let me = null; // current profile { id, email, full_name, role, status }
-let calView = (() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; })();
+let me = null;
 let lastUserId = undefined;
 
 async function fetchProfile(userId) {
-  // The DB trigger creates the profile; on a brand-new signup it may take a
-  // moment, so retry a couple of times.
   for (let i = 0; i < 4; i++) {
     const { data, error } = await supabase
       .from('profiles')
@@ -52,7 +70,7 @@ async function fetchProfile(userId) {
       .maybeSingle();
     if (error) throw error;
     if (data) return data;
-    await sleep(400);
+    await new Promise((r) => setTimeout(r, 400));
   }
   return null;
 }
@@ -64,7 +82,6 @@ async function routeForSession(session) {
     renderAuth();
     return;
   }
-  // Avoid re-rendering on token refreshes for the same user.
   if (session.user.id === lastUserId && me) return;
   lastUserId = session.user.id;
   try {
@@ -83,21 +100,20 @@ async function routeForSession(session) {
 }
 
 supabase.auth.onAuthStateChange((_event, session) => {
-  // Defer out of the callback: calling supabase methods (which need the auth
-  // lock to attach the JWT) directly inside this callback can deadlock.
   setTimeout(() => routeForSession(session), 0);
 });
 
 // ---------------------------------------------------------------------------
-// Auth view (sign in / create account)
+// Auth view
 // ---------------------------------------------------------------------------
 function renderAuth() {
   app.innerHTML = `
     <div class="center-screen">
       <div class="auth-card card">
         <div style="text-align:center; margin-bottom:22px;">
-          <span class="brand" style="justify-content:center;"><span class="mark"></span><span class="name">RED<span>LINE</span></span></span>
-          <p class="subtitle" style="margin-top:8px;">Employee Portal</p>
+          <img class="auth-logo" src="./assets/logo.png" alt="Redline" />
+          <div class="brand" style="justify-content:center;"><span class="name">RED<span>LINE</span></span></div>
+          <p class="subtitle" style="margin-top:6px;">Employee Portal</p>
         </div>
         <div class="tabs">
           <button id="tab-login" class="active" type="button">Sign in</button>
@@ -124,10 +140,8 @@ function renderAuth() {
   const signupForm = document.getElementById('signup-form');
   const tabLogin = document.getElementById('tab-login');
   const tabSignup = document.getElementById('tab-signup');
-
   const showMsg = (t, type = 'error') => { message.textContent = t; message.className = `msg show ${type}`; };
   const clearMsg = () => { message.className = 'msg'; };
-
   const selectTab = (login) => {
     tabLogin.classList.toggle('active', login);
     tabSignup.classList.toggle('active', !login);
@@ -148,7 +162,6 @@ function renderAuth() {
       password: document.getElementById('li-pass').value,
     });
     if (error) { showMsg(error.message || 'Invalid email or password.'); btn.disabled = false; }
-    // On success, onAuthStateChange routes us onward.
   };
 
   signupForm.onsubmit = async (e) => {
@@ -163,11 +176,7 @@ function renderAuth() {
     });
     btn.disabled = false;
     if (error) { showMsg(error.message); return; }
-    if (data.session) {
-      // Email confirmation is off → we're signed in; routing handles the rest.
-      return;
-    }
-    // Email confirmation is on → no session yet.
+    if (data.session) return; // signed in → routing takes over
     signupForm.reset();
     selectTab(true);
     showMsg('Account created! Check your email to confirm, then wait for admin approval.', 'success');
@@ -175,7 +184,7 @@ function renderAuth() {
 }
 
 // ---------------------------------------------------------------------------
-// Pending / denied view
+// Shared chrome
 // ---------------------------------------------------------------------------
 function topbar(extraRight = '') {
   return `
@@ -188,7 +197,6 @@ function topbar(extraRight = '') {
       </div>
     </div>`;
 }
-
 function wireSignout() {
   const b = document.getElementById('signout');
   if (b) b.onclick = async () => { await supabase.auth.signOut(); };
@@ -200,7 +208,8 @@ function renderStatus() {
     ${topbar()}
     <div class="container">
       <div class="card pad" style="max-width:560px; margin:40px auto; text-align:center;">
-        <div class="badge ${esc(me.status)}" style="font-size:0.85rem; margin-bottom:14px;">${esc(me.status)}</div>
+        <img class="auth-logo" src="./assets/logo.png" alt="Redline" style="height:46px" />
+        <div class="badge ${esc(me.status)}" style="font-size:0.85rem; margin:10px 0 14px;">${esc(me.status)}</div>
         <h1>${pending ? 'Your account is awaiting approval' : 'Account not approved'}</h1>
         <p class="subtitle" style="margin-top:8px;">
           ${pending
@@ -215,6 +224,7 @@ function renderStatus() {
 function renderFatal(msg) {
   app.innerHTML = `
     <div class="center-screen"><div class="auth-card card" style="text-align:center">
+      <img class="auth-logo" src="./assets/logo.png" alt="Redline" />
       <h2>Something went wrong</h2>
       <p class="subtitle">${esc(msg)}</p>
       <button id="signout" class="btn ghost full" type="button">Sign out</button>
@@ -222,23 +232,67 @@ function renderFatal(msg) {
   wireSignout();
 }
 
-// ---------------------------------------------------------------------------
-// Employee portal — office-day calendar
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Employee portal — office-day scheduling
+// ===========================================================================
+const sched = {
+  view: (() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; })(),
+  cells: [],
+  rows: [],
+  byDay: new Map(),
+  maxCount: 0,
+  selectedDay: null,
+  pendingSelect: null,
+};
+
 function renderPortal() {
   const adminBtn = me.role === 'admin'
     ? '<button id="go-admin" class="btn ghost sm" type="button">Admin</button>' : '';
-  app.innerHTML = `${topbar(adminBtn)}<div class="container"><div id="cal"></div></div>`;
+  app.innerHTML = `
+    ${topbar(adminBtn)}
+    <div class="container">
+      <div class="page-head">
+        <div>
+          <h1>Office schedule</h1>
+          <p class="subtitle" style="margin:2px 0 0;">Tap any day to see who's in, then add or remove yourself.</p>
+        </div>
+      </div>
+      <div id="stats" class="stats"></div>
+      <div class="cal-toolbar">
+        <div class="cal-month-title" id="cal-title"></div>
+        <div class="cal-nav">
+          <button class="btn ghost sm" id="prev" type="button">‹</button>
+          <button class="btn ghost sm" id="today-btn" type="button">Today</button>
+          <button class="btn ghost sm" id="next" type="button">›</button>
+        </div>
+      </div>
+      <div class="sched">
+        <div class="card pad">
+          <div class="cal-grid dow-row">${DOW.map((d) => `<div class="dow">${d}</div>`).join('')}</div>
+          <div class="cal-grid" id="grid"><div class="spinner" style="grid-column:1/-1">Loading…</div></div>
+          <div class="heat-legend" id="heat-legend"></div>
+        </div>
+        <div id="day-panel"></div>
+      </div>
+    </div>`;
   wireSignout();
   const ga = document.getElementById('go-admin');
   if (ga) ga.onclick = () => renderAdmin();
-  renderCalendar();
+  document.getElementById('prev').onclick = () => shiftMonth(-1);
+  document.getElementById('next').onclick = () => shiftMonth(1);
+  document.getElementById('today-btn').onclick = () => {
+    const n = new Date();
+    sched.view = { year: n.getFullYear(), month: n.getMonth() };
+    sched.pendingSelect = TODAY;
+    loadSchedule();
+  };
+  loadSchedule();
 }
 
 function buildGrid() {
-  const first = new Date(calView.year, calView.month, 1);
-  const offset = (first.getDay() + 6) % 7; // days from Monday
-  const start = new Date(calView.year, calView.month, 1 - offset);
+  const first = new Date(sched.view.year, sched.view.month, 1);
+  const offset = (first.getDay() + 6) % 7;
+  const start = new Date(sched.view.year, sched.view.month, 1 - offset);
   const cells = [];
   for (let i = 0; i < 42; i++) {
     cells.push(new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
@@ -246,48 +300,31 @@ function buildGrid() {
   return cells;
 }
 
-function shiftMonth(delta) {
-  let m = calView.month + delta;
-  let y = calView.year;
-  if (m < 0) { m = 11; y--; }
-  if (m > 11) { m = 0; y++; }
-  calView = { year: y, month: m };
-  renderCalendar();
+function indexRows() {
+  const m = new Map();
+  let mx = 0;
+  for (const r of sched.rows) {
+    if (!m.has(r.day)) m.set(r.day, []);
+    m.get(r.day).push(r);
+  }
+  for (const [, list] of m) mx = Math.max(mx, list.length);
+  sched.byDay = m;
+  sched.maxCount = mx;
 }
 
-async function renderCalendar() {
-  const root = document.getElementById('cal');
-  if (!root) return;
-  root.innerHTML = `
-    <div class="card pad">
-      <div class="cal-head">
-        <div class="cal-title">${MONTHS[calView.month]} ${calView.year}</div>
-        <div class="cal-nav">
-          <button class="btn ghost sm" id="prev" type="button">‹ Prev</button>
-          <button class="btn ghost sm" id="today-btn" type="button">Today</button>
-          <button class="btn ghost sm" id="next" type="button">Next ›</button>
-        </div>
-      </div>
-      <div class="legend">
-        <span><i style="background:var(--accent)"></i>You're in</span>
-        <span><i style="background:var(--surface-2)"></i>Colleague in office</span>
-        <span><i style="background:var(--bg-2);border:1px solid var(--accent)"></i>Today</span>
-      </div>
-      <div class="cal-grid" style="margin-top:14px;">${DOW.map((d) => `<div class="dow">${d}</div>`).join('')}</div>
-      <div class="cal-grid" id="grid" style="margin-top:8px;">
-        <div class="spinner" style="grid-column:1/-1">Loading schedule…</div>
-      </div>
-    </div>`;
+function shiftMonth(delta) {
+  let m = sched.view.month + delta;
+  let y = sched.view.year;
+  if (m < 0) { m = 11; y--; }
+  if (m > 11) { m = 0; y++; }
+  sched.view = { year: y, month: m };
+  loadSchedule();
+}
 
-  document.getElementById('prev').onclick = () => shiftMonth(-1);
-  document.getElementById('next').onclick = () => shiftMonth(1);
-  document.getElementById('today-btn').onclick = () => {
-    const n = new Date(); calView = { year: n.getFullYear(), month: n.getMonth() }; renderCalendar();
-  };
-
-  const cells = buildGrid();
-  const from = toISO(cells[0]);
-  const to = toISO(cells[cells.length - 1]);
+async function loadSchedule() {
+  sched.cells = buildGrid();
+  const from = toISO(sched.cells[0]);
+  const to = toISO(sched.cells[sched.cells.length - 1]);
 
   const { data, error } = await supabase
     .from('office_days')
@@ -296,83 +333,207 @@ async function renderCalendar() {
     .lte('day', to)
     .order('day', { ascending: true });
 
-  const grid = document.getElementById('grid');
   if (error) {
-    grid.innerHTML = `<div class="empty" style="grid-column:1/-1">Couldn't load schedule: ${esc(error.message)}</div>`;
+    const grid = document.getElementById('grid');
+    if (grid) grid.innerHTML = `<div class="empty" style="grid-column:1/-1">Couldn't load schedule: ${esc(error.message)}</div>`;
     return;
   }
+  sched.rows = data;
+  indexRows();
 
-  const byDay = new Map();
-  for (const row of data) {
-    if (!byDay.has(row.day)) byDay.set(row.day, []);
-    byDay.get(row.day).push(row);
-  }
+  const todayInView = new Date().getFullYear() === sched.view.year && new Date().getMonth() === sched.view.month;
+  sched.selectedDay = sched.pendingSelect || (todayInView ? TODAY : toISO(new Date(sched.view.year, sched.view.month, 1)));
+  sched.pendingSelect = null;
+  renderAll();
+}
+
+function renderAll() {
+  renderStats();
+  renderCalendar();
+  renderPanel();
+}
+
+function statCard(label, value, sub, id) {
+  const open = id ? ` id="stat-${id}" style="cursor:pointer"` : '';
+  return `<div class="stat"${open}>
+    <div class="stat-label">${label}</div>
+    <div class="stat-value">${value}</div>
+    <div class="stat-sub">${sub}</div>
+  </div>`;
+}
+
+function renderStats() {
+  const el = document.getElementById('stats');
+  if (!el) return;
+
+  const monthRows = sched.rows.filter((r) => {
+    const [y, m] = r.day.split('-').map(Number);
+    return y === sched.view.year && m - 1 === sched.view.month;
+  });
+  const myMonth = monthRows.filter((r) => r.user_id === me.id).length;
+  const teamMonth = monthRows.length;
+  const todayList = sched.byDay.get(TODAY) || [];
+
+  const dow = [0, 0, 0, 0, 0, 0, 0];
+  for (const r of monthRows) dow[new Date(`${r.day}T00:00:00`).getDay()]++;
+  let bestWd = -1, bestN = 0;
+  for (let i = 0; i < 7; i++) if (dow[i] > bestN) { bestN = dow[i]; bestWd = i; }
+
+  const todayAvatars =
+    todayList.slice(0, 5).map((a) => avatarHTML(a.display_name, a.user_id === me.id, 'sm')).join('') +
+    (todayList.length > 5 ? `<span class="avatar sm more">+${todayList.length - 5}</span>` : '');
+
+  el.innerHTML = `
+    ${statCard('In office today', todayList.length, `<div class="avatar-stack">${todayAvatars || '<span class="muted-mini">No one yet — be the first</span>'}</div>`, 'today')}
+    ${statCard('You this month', myMonth, `<span class="muted-mini">day${myMonth === 1 ? '' : 's'} booked</span>`)}
+    ${statCard('Team days booked', teamMonth, '<span class="muted-mini">across the month</span>')}
+    ${statCard('Most popular', bestWd >= 0 ? WD_PLURAL[bestWd] : '—', bestWd >= 0 ? `<span class="muted-mini">${bestN} visit${bestN === 1 ? '' : 's'}</span>` : '<span class="muted-mini">no bookings yet</span>')}`;
+
+  const tc = document.getElementById('stat-today');
+  if (tc) tc.onclick = () => {
+    const n = new Date();
+    if (n.getFullYear() !== sched.view.year || n.getMonth() !== sched.view.month) {
+      sched.view = { year: n.getFullYear(), month: n.getMonth() };
+      sched.pendingSelect = TODAY;
+      loadSchedule();
+    } else selectDay(TODAY);
+  };
+}
+
+function renderCalendar() {
+  const title = document.getElementById('cal-title');
+  if (title) title.textContent = `${MONTHS[sched.view.month]} ${sched.view.year}`;
+  const grid = document.getElementById('grid');
+  if (!grid) return;
 
   grid.innerHTML = '';
-  for (const d of cells) {
+  for (const d of sched.cells) {
     const iso = toISO(d);
-    const inMonth = d.getMonth() === calView.month;
+    const inMonth = d.getMonth() === sched.view.month;
     const isWeekend = d.getDay() === 0 || d.getDay() === 6;
-    const isPast = iso < TODAY;
-    const attendees = byDay.get(iso) || [];
-    const mine = attendees.some((a) => a.user_id === me.id);
-    const others = attendees.filter((a) => a.user_id !== me.id);
+    const list = sched.byDay.get(iso) || [];
+    const mine = list.some((a) => a.user_id === me.id);
+    const ratio = sched.maxCount ? list.length / sched.maxCount : 0;
 
     const cell = document.createElement('div');
-    cell.className = 'cell';
-    if (!inMonth) cell.classList.add('muted');
-    if (isWeekend) cell.classList.add('weekend');
-    if (iso === TODAY) cell.classList.add('today');
-    if (isPast) cell.classList.add('past');
-    if (mine) cell.classList.add('mine');
+    cell.className = 'cell'
+      + (inMonth ? '' : ' muted')
+      + (isWeekend ? ' weekend' : '')
+      + (iso === TODAY ? ' today' : '')
+      + (iso < TODAY ? ' past' : '')
+      + (mine ? ' mine' : '')
+      + (iso === sched.selectedDay ? ' selected' : '');
+    cell.style.setProperty('--ratio', ratio.toFixed(3));
 
-    const chips = [];
-    if (mine) chips.push('<span class="chip" style="background:var(--accent);color:#fff">You</span>');
-    others.slice(0, mine ? 2 : 3).forEach((a) => chips.push(`<span class="chip">${esc(firstName(a.display_name))}</span>`));
-    const shown = (mine ? 1 : 0) + Math.min(others.length, mine ? 2 : 3);
-    const remaining = attendees.length - shown;
-    if (remaining > 0) chips.push(`<span class="chip more">+${remaining}</span>`);
+    const avs = list.slice(0, 3).map((a) => avatarHTML(a.display_name, a.user_id === me.id)).join('');
+    const more = list.length > 3 ? `<span class="avatar more">+${list.length - 3}</span>` : '';
 
     cell.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div class="cell-top">
         <span class="num">${d.getDate()}</span>
-        ${attendees.length ? `<span class="count-pill">${attendees.length} in</span>` : ''}
+        ${list.length ? `<span class="cnt">${list.length}</span>` : ''}
       </div>
-      <span class="me-flag">✓ You're in</span>
-      <div class="attendees">${chips.join('')}</div>`;
-
-    if (inMonth && !isPast) {
-      cell.addEventListener('click', () => toggleDay(iso, mine, cell));
-    } else {
-      cell.style.cursor = 'default';
-    }
+      <div class="avatar-stack">${avs}${more}</div>`;
+    cell.onclick = () => selectDay(iso);
     grid.appendChild(cell);
   }
+
+  const hl = document.getElementById('heat-legend');
+  if (hl) {
+    hl.innerHTML = sched.maxCount
+      ? `<span class="muted-mini">Quieter</span><span class="heat-scale"></span><span class="muted-mini">Busier (up to ${sched.maxCount})</span>`
+      : '<span class="muted-mini">No office days booked this month yet.</span>';
+  }
 }
 
-async function toggleDay(iso, currentlyMine, cell) {
-  cell.style.pointerEvents = 'none';
-  let error;
-  if (currentlyMine) {
-    ({ error } = await supabase.from('office_days').delete().eq('user_id', me.id).eq('day', iso));
-  } else {
-    ({ error } = await supabase
-      .from('office_days')
-      .insert({ user_id: me.id, day: iso, display_name: me.full_name || me.email }));
-    // 23505 = already booked (race / double-click); treat as success.
-    if (error && error.code === '23505') error = null;
-  }
-  if (error) {
-    alert(error.message);
-    cell.style.pointerEvents = '';
+function selectDay(iso) {
+  const [y, m] = iso.split('-').map(Number);
+  if (y !== sched.view.year || m - 1 !== sched.view.month) {
+    sched.view = { year: y, month: m - 1 };
+    sched.pendingSelect = iso;
+    loadSchedule();
     return;
   }
+  sched.selectedDay = iso;
   renderCalendar();
+  renderPanel();
 }
 
-// ---------------------------------------------------------------------------
+function renderPanel() {
+  const panel = document.getElementById('day-panel');
+  if (!panel) return;
+  const iso = sched.selectedDay;
+  const dObj = new Date(`${iso}T00:00:00`);
+  const isPast = iso < TODAY;
+  const isToday = iso === TODAY;
+  const list = (sched.byDay.get(iso) || []).slice().sort((a, b) => {
+    if (a.user_id === me.id) return -1;
+    if (b.user_id === me.id) return 1;
+    return (a.display_name || '').localeCompare(b.display_name || '');
+  });
+  const mine = list.some((a) => a.user_id === me.id);
+
+  const attendeeHTML = list.length
+    ? list.map((a) => {
+        const meFlag = a.user_id === me.id;
+        return `<div class="att">${avatarHTML(a.display_name, meFlag)}<span>${esc(a.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span></div>`;
+      }).join('')
+    : '<div class="empty" style="padding:10px 2px">Nobody scheduled yet.</div>';
+
+  const action = isPast
+    ? '<button class="btn ghost full" type="button" disabled>This day has passed</button>'
+    : `<button class="btn ${mine ? 'danger' : 'primary'} full" id="toggle-me" type="button">${mine ? '✕ Remove me from this day' : "✓ I'll be in the office"}</button>`;
+
+  panel.innerHTML = `
+    <div class="card pad panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-weekday">${dObj.toLocaleDateString(undefined, { weekday: 'long' })} ${isToday ? '<span class="badge today-badge">Today</span>' : ''}</div>
+          <div class="panel-date">${dObj.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</div>
+        </div>
+        <div class="panel-count"><span class="big">${list.length}</span><span class="muted-mini">in office</span></div>
+      </div>
+      ${action}
+      <div class="att-list">${attendeeHTML}</div>
+    </div>`;
+
+  const t = document.getElementById('toggle-me');
+  if (t) t.onclick = () => toggleMe(iso);
+}
+
+async function toggleMe(iso) {
+  const wasMine = (sched.byDay.get(iso) || []).some((a) => a.user_id === me.id);
+  const myRow = { day: iso, user_id: me.id, display_name: me.full_name || me.email };
+
+  // Optimistic update for instant feedback.
+  sched.rows = wasMine
+    ? sched.rows.filter((r) => !(r.day === iso && r.user_id === me.id))
+    : sched.rows.concat([myRow]);
+  indexRows();
+  renderAll();
+
+  let error;
+  if (wasMine) {
+    ({ error } = await supabase.from('office_days').delete().eq('user_id', me.id).eq('day', iso));
+  } else {
+    ({ error } = await supabase.from('office_days').insert(myRow));
+    if (error && error.code === '23505') error = null; // already booked
+  }
+
+  if (error) {
+    // Revert on failure.
+    sched.rows = wasMine
+      ? sched.rows.concat([myRow])
+      : sched.rows.filter((r) => !(r.day === iso && r.user_id === me.id));
+    indexRows();
+    renderAll();
+    alert(error.message);
+  }
+}
+
+// ===========================================================================
 // Admin dashboard
-// ---------------------------------------------------------------------------
+// ===========================================================================
 function renderAdmin() {
   app.innerHTML = `
     ${topbar('<button id="go-portal" class="btn ghost sm" type="button">My schedule</button>')}
@@ -426,10 +587,13 @@ async function loadUsers() {
   document.getElementById('pending-count').textContent = pending.length ? `(${pending.length})` : '';
   pendingEl.innerHTML = pending.length
     ? pending.map((u) => `
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 2px; border-bottom:1px solid var(--border);">
-          <div>
-            <div style="font-weight:600">${esc(u.full_name) || '(no name)'}</div>
-            <div class="who">${esc(u.email)} · requested ${fmtDate(u.created_at)}</div>
+        <div class="pending-row">
+          <div style="display:flex; align-items:center; gap:10px;">
+            ${avatarHTML(u.full_name || u.email, false)}
+            <div>
+              <div style="font-weight:600">${esc(u.full_name) || '(no name)'}</div>
+              <div class="who">${esc(u.email)} · requested ${fmtDate(u.created_at)}</div>
+            </div>
           </div>
           <div class="actions">
             <button class="btn green sm" data-act="approve" data-id="${esc(u.id)}">Approve</button>
@@ -449,7 +613,7 @@ async function loadUsers() {
         (u.status === 'pending' ? `<button class="btn danger sm" data-act="deny" data-id="${esc(u.id)}">Deny</button>` : '');
     return `
       <tr>
-        <td>${esc(u.full_name) || '(no name)'} ${isSelf ? '<span class="who">(you)</span>' : ''}</td>
+        <td><div style="display:flex;align-items:center;gap:10px;">${avatarHTML(u.full_name || u.email, isSelf)}<span>${esc(u.full_name) || '(no name)'} ${isSelf ? '<span class="who">(you)</span>' : ''}</span></div></td>
         <td class="hide-sm">${esc(u.email)}</td>
         <td><span class="badge ${esc(u.role)}">${esc(u.role)}</span></td>
         <td><span class="badge ${esc(u.status)}">${esc(u.status)}</span></td>
@@ -459,7 +623,6 @@ async function loadUsers() {
   }).join('');
 }
 
-// Event delegation for admin action buttons.
 app.addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
