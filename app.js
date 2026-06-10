@@ -54,7 +54,10 @@ function personColor(name) {
   return `hsl(${h % 360} 55% 45%)`;
 }
 
-function avatarHTML(name, isMe, cls = '') {
+function avatarHTML(name, isMe, cls = '', url = null) {
+  if (url) {
+    return `<span class="avatar img${isMe ? ' me' : ''} ${cls}" style="background-image:url('${esc(url)}')" title="${esc(name)}"></span>`;
+  }
   const bg = isMe ? 'var(--accent)' : personColor(name);
   return `<span class="avatar${isMe ? ' me' : ''} ${cls}" style="background:${bg}" title="${esc(name)}">${esc(initials(name))}</span>`;
 }
@@ -90,6 +93,21 @@ function gridCells(year, month) {
   return cells;
 }
 
+// Monday of the week containing d (Date or ISO).
+function weekStartISO(d = new Date()) {
+  const x = typeof d === 'string' ? new Date(`${d}T00:00:00`) : new Date(d);
+  const off = (x.getDay() + 6) % 7;
+  x.setDate(x.getDate() - off);
+  return toISO(x);
+}
+
+// Inclusive count of calendar weeks spanned by two days.
+function diffWeeks(aISO, bISO) {
+  const a = new Date(`${weekStartISO(aISO)}T00:00:00`);
+  const b = new Date(`${weekStartISO(bISO)}T00:00:00`);
+  return Math.max(1, Math.round((b - a) / (7 * 86400000)) + 1);
+}
+
 // ---- Time formatting (values arrive as "HH:MM" or "HH:MM:SS") ----
 const hhmm = (t) => String(t || '').slice(0, 5);
 function fmt12(t) {
@@ -109,6 +127,23 @@ const fmtRange = (s, e) => `${fmt12(s)} – ${fmt12(e)}${isOvernight(s, e) ? ' <
 const fmtRangePlain = (s, e) => `${fmt12(s)} – ${fmt12(e)}${isOvernight(s, e) ? ' (next day)' : ''}`;
 const fmtCompactRange = (s, e) => `${fmtCompact(s)}–${fmtCompact(e)}`;
 
+// Hours worked for an in-office entry (overnight wraps to the next day).
+function entryHours(r) {
+  if (kindOf(r) !== 'in' || !r.start_time || !r.end_time) return 0;
+  const [sh, sm] = hhmm(r.start_time).split(':').map(Number);
+  const [eh, em] = hhmm(r.end_time).split(':').map(Number);
+  let mins = (eh * 60 + em) - (sh * 60 + sm);
+  if (mins <= 0) mins += 24 * 60;
+  return mins / 60;
+}
+function fmtHours(h) {
+  const m = Math.round(h * 60);
+  const H = Math.floor(m / 60);
+  const M = m % 60;
+  if (!H) return `${M}m`;
+  return M ? `${H}h ${M}m` : `${H}h`;
+}
+
 // ---- Icons (feather-style strokes) ----
 function icon(name, cls = 'ic') {
   const paths = {
@@ -121,6 +156,7 @@ function icon(name, cls = 'ic') {
     search: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
     plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
     edit: '<path d="M17 3a2.83 2.83 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
+    camera: '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
   };
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -163,13 +199,13 @@ const STRIPES = `
 let me = null;
 let lastUserId = undefined;
 let clockTimer = null;
-const ui = { view: 'dashboard', search: '' };
+const ui = { view: 'dashboard', search: '', teamUser: null };
 
 async function fetchProfile(userId) {
   for (let i = 0; i < 4; i++) {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, email, full_name, role, status, created_at')
+      .select('id, email, full_name, role, status, created_at, avatar_url')
       .eq('id', userId)
       .maybeSingle();
     if (error) throw error;
@@ -213,12 +249,63 @@ supabase.auth.onAuthStateChange((_event, session) => {
 async function fetchDays(from, to) {
   const { data, error } = await supabase
     .from('office_days')
-    .select('day, user_id, display_name, start_time, end_time, kind')
+    .select('day, user_id, display_name, avatar_url, start_time, end_time, kind')
     .gte('day', from)
     .lte('day', to)
     .order('start_time', { ascending: true });
   if (error) throw error;
   return data || [];
+}
+
+// ---------------------------------------------------------------------------
+// Profile pictures (Supabase Storage: public "avatars" bucket)
+// ---------------------------------------------------------------------------
+function pickImageFile() {
+  return new Promise((resolve) => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*';
+    inp.onchange = () => resolve(inp.files && inp.files[0] ? inp.files[0] : null);
+    inp.click();
+  });
+}
+
+async function uploadAvatar(uid, file) {
+  const path = `${uid}/avatar`;
+  const { error: upErr } = await supabase.storage
+    .from('avatars')
+    .upload(path, file, { upsert: true, contentType: file.type, cacheControl: '3600' });
+  if (upErr) throw upErr;
+  const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+  const url = `${data.publicUrl}?t=${Date.now()}`; // cache-bust so the new photo shows immediately
+  const { error: pErr } = await supabase.from('profiles').update({ avatar_url: url }).eq('id', uid);
+  if (pErr) throw pErr;
+  await supabase.from('office_days').update({ avatar_url: url }).eq('user_id', uid);
+  return url;
+}
+
+async function removeAvatar(uid) {
+  await supabase.storage.from('avatars').remove([`${uid}/avatar`]);
+  const { error } = await supabase.from('profiles').update({ avatar_url: null }).eq('id', uid);
+  if (error) throw error;
+  await supabase.from('office_days').update({ avatar_url: null }).eq('user_id', uid);
+  if (uid === me.id) me.avatar_url = null;
+}
+
+// Pick a file and upload it as `uid`'s avatar. onDone(url) runs on success.
+async function changeAvatar(uid, onDone) {
+  const file = await pickImageFile();
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { toast('Please choose an image file.'); return; }
+  if (file.size > 5 * 1024 * 1024) { toast('Image must be under 5 MB.'); return; }
+  try {
+    const url = await uploadAvatar(uid, file);
+    if (uid === me.id) me.avatar_url = url;
+    toast('Photo updated');
+    if (onDone) onDone(url);
+  } catch (e) {
+    toast(e.message || 'Upload failed');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,15 +390,22 @@ function renderAuth() {
 }
 
 // ---------------------------------------------------------------------------
-// Name editing modal + small chrome helpers
+// Edit-profile modal (photo + display name) + small chrome helpers
 // ---------------------------------------------------------------------------
-function openNameModal() {
+function openProfileModal() {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
     <div class="modal card pad">
-      <h2 style="margin-bottom:4px;">Edit your name</h2>
-      <p class="subtitle" style="margin-bottom:16px;">This is how you appear on the schedule.</p>
+      <h2 style="margin-bottom:4px;">Edit profile</h2>
+      <p class="subtitle" style="margin-bottom:18px;">Your photo and name appear on the schedule.</p>
+      <div class="modal-avatar">
+        <div id="pm-avatar">${avatarHTML(me.full_name || me.email, true, 'xl', me.avatar_url)}</div>
+        <div class="modal-avatar-actions">
+          <button class="btn ghost sm" id="pm-upload" type="button">Upload photo</button>
+          <button class="btn ghost sm" id="pm-remove" type="button"${me.avatar_url ? '' : ' style="display:none"'}>Remove</button>
+        </div>
+      </div>
       <div id="nm-msg" class="msg"></div>
       <label>Display name</label>
       <input id="nm-input" type="text" maxlength="60" value="${esc(me.full_name || '')}" />
@@ -322,25 +416,43 @@ function openNameModal() {
     </div>`;
   document.body.appendChild(overlay);
 
-  const close = () => overlay.remove();
+  let dirty = false;
+  const close = () => { overlay.remove(); if (dirty) rerenderCurrent(); };
   const input = overlay.querySelector('#nm-input');
   const msg = overlay.querySelector('#nm-msg');
   const saveBtn = overlay.querySelector('#nm-save');
+  const avBox = overlay.querySelector('#pm-avatar');
+  const rmBtn = overlay.querySelector('#pm-remove');
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   overlay.querySelector('#nm-cancel').onclick = close;
   input.focus();
   input.select();
 
+  const refreshAvatar = () => {
+    avBox.innerHTML = avatarHTML(me.full_name || me.email, true, 'xl', me.avatar_url);
+    rmBtn.style.display = me.avatar_url ? '' : 'none';
+  };
+
+  overlay.querySelector('#pm-upload').onclick = () => changeAvatar(me.id, () => { dirty = true; refreshAvatar(); });
+  rmBtn.onclick = async () => {
+    rmBtn.disabled = true;
+    try { await removeAvatar(me.id); dirty = true; refreshAvatar(); toast('Photo removed'); }
+    catch (e) { toast(e.message || 'Could not remove photo'); }
+    rmBtn.disabled = false;
+  };
+
   const save = async () => {
     const name = input.value.trim();
     if (name.length < 1) { msg.textContent = 'Name cannot be empty.'; msg.className = 'msg show error'; return; }
     saveBtn.disabled = true;
-    const { error } = await supabase.from('profiles').update({ full_name: name }).eq('id', me.id);
-    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-    await supabase.from('office_days').update({ display_name: name }).eq('user_id', me.id);
-    me.full_name = name;
+    if (name !== (me.full_name || '')) {
+      const { error } = await supabase.from('profiles').update({ full_name: name }).eq('id', me.id);
+      if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
+      await supabase.from('office_days').update({ display_name: name }).eq('user_id', me.id);
+      me.full_name = name;
+      dirty = true;
+    }
     close();
-    rerenderCurrent();
   };
   saveBtn.onclick = save;
   input.onkeydown = (e) => { if (e.key === 'Enter') save(); };
@@ -426,13 +538,13 @@ function renderShell() {
     </div>`;
 
   document.querySelectorAll('.nav-item[data-view]').forEach((b) => {
-    b.onclick = () => setView(b.dataset.view);
+    b.onclick = () => { ui.teamUser = null; setView(b.dataset.view); };
   });
-  document.getElementById('nav-settings').onclick = openNameModal;
+  document.getElementById('nav-settings').onclick = openProfileModal;
   document.getElementById('nav-logout').onclick = async () => { await supabase.auth.signOut(); };
   document.getElementById('quick-add').onclick = () => gotoDay(TODAY);
   document.getElementById('bell').onclick = () => {
-    if (isAdmin) setView('team');
+    if (isAdmin) { ui.teamUser = null; setView('team'); }
     else toast("You're all caught up 🎉");
   };
 
@@ -509,7 +621,7 @@ function updateTopStack(rows) {
   }
   list.sort((a, b) => (a.user_id === me.id ? -1 : b.user_id === me.id ? 1 : 0));
   el.innerHTML =
-    list.slice(0, 4).map((r) => avatarHTML(r.display_name, r.user_id === me.id, 'sm')).join('') +
+    list.slice(0, 4).map((r) => avatarHTML(r.display_name, r.user_id === me.id, 'sm', r.avatar_url)).join('') +
     (list.length > 4 ? `<span class="avatar sm more">+${list.length - 4}</span>` : '');
 }
 
@@ -541,9 +653,9 @@ function viewDashboard(view) {
         <div class="dash-grid">
           <div class="dash-col">
             <div class="card pad profile-card">
-              <button class="edit-fab" id="prof-edit" type="button" title="Edit your display name">${icon('edit', 'ic sm')}</button>
+              <button class="edit-fab" id="prof-edit" type="button" title="Edit your profile">${icon('edit', 'ic sm')}</button>
               <div class="prof-head">
-                ${avatarHTML(me.full_name || me.email, true, 'lg')}
+                <button class="av-btn" id="prof-avatar" type="button" title="Change photo">${avatarHTML(me.full_name || me.email, true, 'lg', me.avatar_url)}</button>
                 <div>
                   <div class="prof-name">${esc(me.full_name || '(no name)')}</div>
                   <span class="badge ${esc(me.role)}">${esc(me.role)}</span>
@@ -599,7 +711,8 @@ function viewDashboard(view) {
 
   document.getElementById('hero-cta').onclick = () => gotoDay(TODAY);
   document.getElementById('see-cal').onclick = () => setView('schedule');
-  document.getElementById('prof-edit').onclick = openNameModal;
+  document.getElementById('prof-edit').onclick = openProfileModal;
+  document.getElementById('prof-avatar').onclick = openProfileModal;
   document.getElementById('mini-prev').onclick = () => shiftMini(-1);
   document.getElementById('mini-next').onclick = () => shiftMini(1);
 
@@ -718,7 +831,7 @@ function renderTodayCard() {
   const inHTML = ins.length
     ? ins.slice(0, 6).map((r) => {
         const meFlag = r.user_id === me.id;
-        return `<div class="att">${avatarHTML(r.display_name, meFlag)}<span class="att-name">${esc(r.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${
+        return `<div class="att">${avatarHTML(r.display_name, meFlag, '', r.avatar_url)}<span class="att-name">${esc(r.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${
           r.start_time ? `<span class="att-hours">${esc(fmtCompactRange(r.start_time, r.end_time))}</span>` : ''
         }</div>`;
       }).join('') + (ins.length > 6 ? `<div class="muted-mini" style="padding:4px 2px">+${ins.length - 6} more</div>` : '')
@@ -756,7 +869,7 @@ function renderMonthCard() {
   }
   mates.sort((a, b) => (a.user_id === me.id ? -1 : b.user_id === me.id ? 1 : 0));
   document.getElementById('mc-stack').innerHTML =
-    mates.slice(0, 5).map((r) => avatarHTML(r.display_name, r.user_id === me.id, 'sm')).join('') +
+    mates.slice(0, 5).map((r) => avatarHTML(r.display_name, r.user_id === me.id, 'sm', r.avatar_url)).join('') +
     (mates.length > 5 ? `<span class="avatar sm more">+${mates.length - 5}</span>` : '');
   document.getElementById('mc-note').textContent = mates.length
     ? `${mates.length} ${mates.length === 1 ? 'person' : 'people'} active this month`
@@ -768,7 +881,7 @@ async function loadPendingCard() {
   if (!box) return;
   const { data, count, error } = await supabase
     .from('profiles')
-    .select('id, full_name, email', { count: 'exact' })
+    .select('id, full_name, email, avatar_url', { count: 'exact' })
     .eq('status', 'pending')
     .order('created_at', { ascending: true })
     .limit(3);
@@ -781,10 +894,10 @@ async function loadPendingCard() {
   }
   box.innerHTML = `
     <div class="pend-count"><span class="big">${count}</span><span class="muted-mini">waiting for approval</span></div>
-    ${data.map((u) => `<div class="att">${avatarHTML(u.full_name || u.email, false)}<span class="att-name">${esc(u.full_name || u.email)}</span></div>`).join('')}
+    ${data.map((u) => `<div class="att">${avatarHTML(u.full_name || u.email, false, '', u.avatar_url)}<span class="att-name">${esc(u.full_name || u.email)}</span></div>`).join('')}
     <button class="btn primary full sm" id="pend-review" type="button" style="margin-top:12px;">Review requests</button>`;
   const b = document.getElementById('pend-review');
-  if (b) b.onclick = () => setView('team');
+  if (b) b.onclick = () => { ui.teamUser = null; setView('team'); };
 }
 
 // ===========================================================================
@@ -921,7 +1034,7 @@ function renderStats() {
   for (let i = 0; i < 7; i++) if (dow[i] > bestN) { bestN = dow[i]; bestWd = i; }
 
   const todayAvatars =
-    todayIn.slice(0, 5).map((a) => avatarHTML(a.display_name, a.user_id === me.id, 'sm')).join('') +
+    todayIn.slice(0, 5).map((a) => avatarHTML(a.display_name, a.user_id === me.id, 'sm', a.avatar_url)).join('') +
     (todayIn.length > 5 ? `<span class="avatar sm more">+${todayIn.length - 5}</span>` : '');
   const outTotal = todayVac + todaySick;
 
@@ -1036,7 +1149,7 @@ function renderPanel() {
           detail = `<span class="att-tag ${k}">${KIND_EMOJI[k]} ${KIND_LABEL[k]}</span>`;
         }
         const dim = matchesSearch(a) ? '' : ' dim';
-        return `<div class="att${dim}">${avatarHTML(a.display_name, meFlag)}<span class="att-name">${esc(a.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${detail}</div>`;
+        return `<div class="att${dim}">${avatarHTML(a.display_name, meFlag, '', a.avatar_url)}<span class="att-name">${esc(a.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${detail}</div>`;
       }).join('')
     : '<div class="empty" style="padding:10px 2px">Nobody scheduled yet.</div>';
 
@@ -1144,6 +1257,7 @@ async function saveEntry(iso, kind, start, end) {
     day: iso,
     user_id: me.id,
     display_name: me.full_name || me.email,
+    avatar_url: me.avatar_url || null,
     kind,
     start_time: kind === 'in' ? start : null,
     end_time: kind === 'in' ? end : null,
@@ -1155,7 +1269,7 @@ async function saveEntry(iso, kind, start, end) {
   indexRows();
   renderAll();
 
-  const payload = { kind, start_time: row.start_time, end_time: row.end_time, display_name: row.display_name };
+  const payload = { kind, start_time: row.start_time, end_time: row.end_time, display_name: row.display_name, avatar_url: row.avatar_url };
   let error;
   if (wasMine) {
     ({ error } = await supabase.from('office_days').update(payload).eq('user_id', me.id).eq('day', iso));
@@ -1189,14 +1303,15 @@ async function removeMe(iso) {
 }
 
 // ===========================================================================
-// Team view (admin)
+// Team view (admin) — list + individual user detail
 // ===========================================================================
 function viewTeam(view) {
+  if (ui.teamUser) { viewTeamDetail(view, ui.teamUser); return; }
   view.innerHTML = `
     <div class="page-head">
       <div>
         <h1>Team</h1>
-        <p class="subtitle" style="margin:2px 0 0;">Review access requests and manage employees.</p>
+        <p class="subtitle" style="margin:2px 0 0;">Review access requests, open a profile for details, and manage employees.</p>
       </div>
     </div>
     <div id="admin-msg" class="msg"></div>
@@ -1216,9 +1331,16 @@ function viewTeam(view) {
   loadUsers();
 }
 
+function refreshTeam() {
+  const v = document.getElementById('view');
+  if (!v || ui.view !== 'team') return;
+  if (ui.teamUser) viewTeamDetail(v, ui.teamUser);
+  else loadUsers();
+}
+
 function adminFlash(text, type = 'success') {
   const m = document.getElementById('admin-msg');
-  if (!m) return;
+  if (!m) { toast(text); return; }
   m.textContent = text;
   m.className = `msg show ${type}`;
   setTimeout(() => { m.className = 'msg'; }, 3500);
@@ -1227,7 +1349,7 @@ function adminFlash(text, type = 'success') {
 async function loadUsers() {
   const { data: users, error } = await supabase
     .from('profiles')
-    .select('id, email, full_name, role, status, created_at')
+    .select('id, email, full_name, role, status, created_at, avatar_url')
     .order('created_at', { ascending: false });
 
   const pendingEl = document.getElementById('pending');
@@ -1245,13 +1367,13 @@ async function loadUsers() {
   pendingEl.innerHTML = pending.length
     ? pending.map((u) => `
         <div class="pending-row">
-          <div style="display:flex; align-items:center; gap:10px;">
-            ${avatarHTML(u.full_name || u.email, false)}
-            <div>
+          <button class="row-user" type="button" data-view-user="${esc(u.id)}">
+            ${avatarHTML(u.full_name || u.email, false, '', u.avatar_url)}
+            <div style="text-align:left">
               <div style="font-weight:600">${esc(u.full_name) || '(no name)'}</div>
               <div class="who">${esc(u.email)} · requested ${fmtDate(u.created_at)}</div>
             </div>
-          </div>
+          </button>
           <div class="actions">
             <button class="btn green sm" data-act="approve" data-id="${esc(u.id)}">Approve</button>
             <button class="btn danger sm" data-act="deny" data-id="${esc(u.id)}">Deny</button>
@@ -1270,14 +1392,249 @@ async function loadUsers() {
         (u.status === 'pending' ? `<button class="btn danger sm" data-act="deny" data-id="${esc(u.id)}">Deny</button>` : '');
     return `
       <tr>
-        <td><div style="display:flex;align-items:center;gap:10px;">${avatarHTML(u.full_name || u.email, isSelf)}<span>${esc(u.full_name) || '(no name)'} ${isSelf ? '<span class="who">(you)</span>' : ''}</span></div></td>
+        <td><button class="row-user" type="button" data-view-user="${esc(u.id)}">${avatarHTML(u.full_name || u.email, isSelf, '', u.avatar_url)}<span>${esc(u.full_name) || '(no name)'}${isSelf ? ' <span class="who">(you)</span>' : ''}</span></button></td>
         <td class="hide-sm">${esc(u.email)}</td>
         <td><span class="badge ${esc(u.role)}">${esc(u.role)}</span></td>
         <td><span class="badge ${esc(u.status)}">${esc(u.status)}</span></td>
         <td class="hide-sm">${fmtDate(u.created_at)}</td>
-        <td><div class="actions">${statusActions}${roleToggle}</div></td>
+        <td><div class="actions"><button class="btn ghost sm" data-view-user="${esc(u.id)}">Details</button>${statusActions}${roleToggle}</div></td>
       </tr>`;
   }).join('');
+
+  app.querySelectorAll('[data-view-user]').forEach((b) => {
+    b.onclick = () => { ui.teamUser = b.dataset.viewUser; setView('team'); };
+  });
+}
+
+// ---- Individual user detail (analytics + editable schedule + photo) ----
+async function viewTeamDetail(view, uid) {
+  view.innerHTML = `
+    <button class="link-btn" id="td-back" type="button">‹ Back to team</button>
+    <div class="spinner">Loading…</div>`;
+  view.querySelector('#td-back').onclick = () => { ui.teamUser = null; setView('team'); };
+
+  let profile, days;
+  try {
+    const [pRes, dRes] = await Promise.all([
+      supabase.from('profiles').select('id, email, full_name, role, status, created_at, avatar_url').eq('id', uid).maybeSingle(),
+      supabase.from('office_days').select('day, start_time, end_time, kind').eq('user_id', uid).order('day', { ascending: true }),
+    ]);
+    if (pRes.error) throw pRes.error;
+    if (dRes.error) throw dRes.error;
+    profile = pRes.data;
+    days = dRes.data || [];
+  } catch (e) {
+    view.innerHTML = `
+      <button class="link-btn" id="td-back2" type="button">‹ Back to team</button>
+      <div class="card pad"><div class="empty">Couldn't load this user: ${esc(e.message)}</div></div>`;
+    view.querySelector('#td-back2').onclick = () => { ui.teamUser = null; setView('team'); };
+    return;
+  }
+  if (!profile) {
+    view.innerHTML = `
+      <button class="link-btn" id="td-back3" type="button">‹ Back to team</button>
+      <div class="card pad"><div class="empty">User not found.</div></div>`;
+    view.querySelector('#td-back3').onclick = () => { ui.teamUser = null; setView('team'); };
+    return;
+  }
+  renderTeamDetail(view, profile, days);
+}
+
+function renderTeamDetail(view, p, days) {
+  const isSelf = p.id === me.id;
+  const inRows = days.filter((r) => kindOf(r) === 'in');
+  const ws = weekStartISO();
+  const we = addDaysISO(ws, 6);
+  const ty = new Date().getFullYear(), tm = new Date().getMonth();
+  const inWeek = inRows.filter((r) => r.day >= ws && r.day <= we);
+  const inMonth = inRows.filter((r) => { const [y, m] = r.day.split('-').map(Number); return y === ty && m - 1 === tm; });
+  const hoursMonth = inMonth.reduce((s, r) => s + entryHours(r), 0);
+  const hoursAll = inRows.reduce((s, r) => s + entryHours(r), 0);
+
+  let avgDays = 0, avgHours = 0, weeks = 0;
+  if (inRows.length) {
+    const first = inRows[0].day, last = inRows[inRows.length - 1].day;
+    const spanEnd = last > TODAY ? last : TODAY;
+    weeks = diffWeeks(first, spanEnd);
+    avgDays = inRows.length / weeks;
+    avgHours = hoursAll / weeks;
+  }
+
+  const roleToggle = p.role === 'admin'
+    ? `<button class="btn ghost sm" data-act="make-employee" data-id="${esc(p.id)}"${isSelf ? ' disabled' : ''}>Make employee</button>`
+    : `<button class="btn ghost sm" data-act="make-admin" data-id="${esc(p.id)}">Make admin</button>`;
+  const statusActions = p.status === 'approved'
+    ? (isSelf ? '' : `<button class="btn danger sm" data-act="deny" data-id="${esc(p.id)}">Revoke access</button>`)
+    : `<button class="btn green sm" data-act="approve" data-id="${esc(p.id)}">Approve</button>` +
+      (p.status === 'pending' ? `<button class="btn danger sm" data-act="deny" data-id="${esc(p.id)}">Deny</button>` : '');
+
+  const metric = (label, value, sub) =>
+    `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${value}</div><div class="stat-sub"><span class="muted-mini">${sub}</span></div></div>`;
+
+  const sorted = days.slice().sort((a, b) => b.day.localeCompare(a.day));
+  const scheduleHTML = sorted.length
+    ? sorted.map((r) => {
+        const d = new Date(`${r.day}T00:00:00`);
+        const k = kindOf(r);
+        const when = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+        const detail = k === 'in'
+          ? (r.start_time ? `${fmtRangePlain(r.start_time, r.end_time)} · ${fmtHours(entryHours(r))}` : 'no hours set')
+          : KIND_LABEL[k];
+        return `
+          <div class="sched-row${r.day < TODAY ? ' past' : ''}">
+            <div class="sched-when">
+              <span class="pill ${k}">${k === 'in' ? 'IN' : k === 'vacation' ? 'VAC' : 'SICK'}</span>
+              <div><div class="sched-date">${when}</div><div class="muted-mini">${esc(detail)}</div></div>
+            </div>
+            <div class="actions">
+              <button class="btn ghost sm" data-edit-day="${esc(r.day)}">Edit</button>
+              <button class="btn danger sm" data-del-day="${esc(r.day)}">Remove</button>
+            </div>
+          </div>`;
+      }).join('')
+    : '<div class="empty">No scheduled days yet.</div>';
+
+  view.innerHTML = `
+    <button class="link-btn" id="td-back" type="button">‹ Back to team</button>
+    <div class="card pad detail-head">
+      <div class="dh-avatar">
+        ${avatarHTML(p.full_name || p.email, isSelf, 'xl', p.avatar_url)}
+        <button class="dh-upload" id="td-photo" type="button" title="Upload photo">${icon('camera', 'ic sm')}</button>
+      </div>
+      <div class="dh-info">
+        <h1>${esc(p.full_name) || '(no name)'} ${isSelf ? '<span class="who">(you)</span>' : ''}</h1>
+        <div class="dh-meta">${esc(p.email)} · joined ${fmtDate((p.created_at || '').slice(0, 10)) || '—'}</div>
+        <div class="dh-badges"><span class="badge ${esc(p.role)}">${esc(p.role)}</span><span class="badge ${esc(p.status)}">${esc(p.status)}</span></div>
+      </div>
+      <div class="dh-actions">${statusActions}${roleToggle}</div>
+    </div>
+
+    <div class="section">
+      <div class="section-head"><h2 style="margin:0">Attendance</h2></div>
+      <div class="stats metric-grid">
+        ${metric('Days this week', inWeek.length, 'in office')}
+        ${metric('Days this month', inMonth.length, `${fmtHours(hoursMonth)} total`)}
+        ${metric('Days all time', inRows.length, `${fmtHours(hoursAll)} total`)}
+        ${metric('Avg days / week', avgDays ? avgDays.toFixed(1) : '0', weeks ? `over ${weeks} week${weeks === 1 ? '' : 's'}` : 'no data yet')}
+        ${metric('Avg hours / week', avgHours ? fmtHours(avgHours) : '0h', weeks ? `over ${weeks} week${weeks === 1 ? '' : 's'}` : 'no data yet')}
+        ${metric('Hours this month', fmtHours(hoursMonth), `across ${inMonth.length} day${inMonth.length === 1 ? '' : 's'}`)}
+        ${metric('Hours all time', fmtHours(hoursAll), `across ${inRows.length} day${inRows.length === 1 ? '' : 's'}`)}
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head"><h2 style="margin:0">Scheduled days</h2><button class="btn primary sm" id="td-add" type="button">+ Add day</button></div>
+      <div class="card pad"><div class="sched-list">${scheduleHTML}</div></div>
+    </div>`;
+
+  view.querySelector('#td-back').onclick = () => { ui.teamUser = null; setView('team'); };
+  view.querySelector('#td-photo').onclick = () => changeAvatar(p.id, () => refreshTeam());
+  view.querySelector('#td-add').onclick = () => openAdminEntryModal(p, null);
+  view.querySelectorAll('[data-edit-day]').forEach((b) => {
+    b.onclick = () => openAdminEntryModal(p, days.find((r) => r.day === b.dataset.editDay) || null);
+  });
+  view.querySelectorAll('[data-del-day]').forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true;
+      const { error } = await supabase.from('office_days').delete().eq('user_id', p.id).eq('day', b.dataset.delDay);
+      if (error) { toast(error.message); b.disabled = false; return; }
+      toast('Day removed');
+      refreshTeam();
+    };
+  });
+}
+
+// Admin: add or edit a specific user's office day (date + kind + hours).
+function openAdminEntryModal(profile, row) {
+  const editing = !!(row && row.kind);
+  const dayVal = row && row.day ? row.day : TODAY;
+  const kind = editing ? kindOf(row) : 'in';
+  const s = row && row.start_time ? hhmm(row.start_time) : '09:00';
+  const e = row && row.end_time ? hhmm(row.end_time) : '17:00';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal card pad">
+      <h2 style="margin-bottom:4px;">${editing ? 'Edit day' : 'Add a day'}</h2>
+      <p class="subtitle" style="margin-bottom:16px;">For ${esc(profile.full_name || profile.email)}.</p>
+      <label>Date</label>
+      <input type="date" id="ae-date" value="${dayVal}"${editing ? ' disabled' : ''} />
+      <div class="kind-select" style="margin-top:14px;">
+        <button type="button" class="kind-opt${kind === 'in' ? ' active' : ''}" data-kind="in">🏢 In</button>
+        <button type="button" class="kind-opt${kind === 'vacation' ? ' active' : ''}" data-kind="vacation">🌴 Vacation</button>
+        <button type="button" class="kind-opt${kind === 'sick' ? ' active' : ''}" data-kind="sick">🤒 Sick</button>
+      </div>
+      <div class="hours-wrap"${kind === 'in' ? '' : ' style="display:none"'}>
+        <div class="hours-row">
+          <div><label>From</label><input type="time" id="ae-start" value="${s}"></div>
+          <div><label>To</label><input type="time" id="ae-end" value="${e}"></div>
+        </div>
+        <div class="presets">
+          <button type="button" class="chip-btn" data-preset="09:00|17:00">9–5</button>
+          <button type="button" class="chip-btn" data-preset="08:00|16:00">8–4</button>
+          <button type="button" class="chip-btn" data-preset="00:00|23:59">All day</button>
+        </div>
+      </div>
+      <div id="ae-msg" class="msg"></div>
+      <div class="modal-foot">
+        ${editing ? '<button class="btn danger" id="ae-remove" type="button" style="margin-right:auto;">Remove</button>' : ''}
+        <button class="btn ghost" id="ae-cancel" type="button">Cancel</button>
+        <button class="btn primary" id="ae-save" type="button">Save</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  const msg = overlay.querySelector('#ae-msg');
+  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
+  overlay.querySelector('#ae-cancel').onclick = close;
+
+  overlay.querySelectorAll('.kind-opt').forEach((b) => {
+    b.onclick = () => {
+      overlay.querySelectorAll('.kind-opt').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+      overlay.querySelector('.hours-wrap').style.display = b.dataset.kind === 'in' ? '' : 'none';
+    };
+  });
+  overlay.querySelectorAll('.chip-btn').forEach((b) => {
+    b.onclick = () => {
+      const [a, c] = b.dataset.preset.split('|');
+      overlay.querySelector('#ae-start').value = a;
+      overlay.querySelector('#ae-end').value = c;
+    };
+  });
+
+  const rm = overlay.querySelector('#ae-remove');
+  if (rm) rm.onclick = async () => {
+    rm.disabled = true;
+    const { error } = await supabase.from('office_days').delete().eq('user_id', profile.id).eq('day', dayVal);
+    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; rm.disabled = false; return; }
+    close(); toast('Day removed'); refreshTeam();
+  };
+
+  overlay.querySelector('#ae-save').onclick = async () => {
+    const day = overlay.querySelector('#ae-date').value;
+    if (!day) { msg.textContent = 'Please choose a date.'; msg.className = 'msg show error'; return; }
+    const k = overlay.querySelector('.kind-opt.active').dataset.kind;
+    let st = null, en = null;
+    if (k === 'in') {
+      st = overlay.querySelector('#ae-start').value;
+      en = overlay.querySelector('#ae-end').value;
+      if (!st || !en) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
+      if (st === en) { msg.textContent = "Start and end times can't be the same."; msg.className = 'msg show error'; return; }
+    }
+    const payload = {
+      user_id: profile.id, day,
+      display_name: profile.full_name || profile.email,
+      avatar_url: profile.avatar_url || null,
+      kind: k, start_time: st, end_time: en,
+    };
+    const saveBtn = overlay.querySelector('#ae-save');
+    saveBtn.disabled = true;
+    const { error } = await supabase.from('office_days').upsert(payload, { onConflict: 'user_id,day' });
+    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
+    close(); toast('Saved'); refreshTeam();
+  };
 }
 
 app.addEventListener('click', async (e) => {
@@ -1297,5 +1654,5 @@ app.addEventListener('click', async (e) => {
 
   if (error) { adminFlash(error.message, 'error'); btn.disabled = false; return; }
   adminFlash('Updated.');
-  loadUsers();
+  refreshTeam();
 });

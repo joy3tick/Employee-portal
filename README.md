@@ -5,6 +5,8 @@ A simple internal portal for Redline employees:
 - **Self-service signup** — employees create an account in seconds.
 - **Admin approval** — new accounts sit in *pending* until an admin approves or denies them.
 - **Office-day scheduling** — approved employees mark which days they're in on a shared calendar and see who else is in.
+- **Profile pictures** — everyone can upload their own photo; admins can set one for any employee.
+- **Per-employee insights (admin)** — open any user to see days this week/month/all-time, hours this month/all-time, and weekly averages, then add or edit the hours on any specific day.
 
 It's a **static web app** (plain HTML/CSS/JS, no build step) that talks directly to **Supabase** (Auth + Postgres). There's no server to run — it's hosted on **Vercel** and all security is enforced by Postgres Row Level Security.
 
@@ -25,7 +27,9 @@ Open the SQL editor, paste the contents of [`supabase/schema.sql`](supabase/sche
 
 👉 https://supabase.com/dashboard/project/dhvgqwrazdykkgszlhlr/sql/new
 
-This creates the tables, the auto-profile trigger (which makes **alexrogul@gmail.com** an admin automatically), and the security policies.
+This creates the tables, the auto-profile trigger (which makes **alexrogul@gmail.com** an admin automatically), the `avatars` storage bucket, and the security policies.
+
+> **Updating an existing project?** The schema is idempotent — whenever you pull new features (like profile pictures or admin insights), just paste and **Run** it again to add the new columns, the `avatars` bucket, and the new policies.
 
 ### 2. Turn off email confirmation (recommended)
 So signup is instant (admin approval is the real gate anyway):

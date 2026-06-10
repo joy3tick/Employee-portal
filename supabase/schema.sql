@@ -159,3 +159,49 @@ create trigger protect_profile_columns
 drop policy if exists office_days_update_own on public.office_days;
 create policy office_days_update_own on public.office_days for update
   using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- ---------------------------------------------------------------------------
+-- Profile pictures
+-- ---------------------------------------------------------------------------
+-- avatar_url lives on the profile, and is denormalized onto office_days (like
+-- display_name) so the shared calendar can show everyone's photo even though
+-- employees can't read each other's profile rows.
+alter table public.profiles    add column if not exists avatar_url text;
+alter table public.office_days add column if not exists avatar_url text;
+
+-- Public "avatars" storage bucket (read by anyone; uploads are restricted below).
+insert into storage.buckets (id, name, public)
+values ('avatars', 'avatars', true)
+on conflict (id) do update set public = true;
+
+-- Each user can write to the folder named after their own id; admins can write
+-- to anyone's folder (so an admin can set a photo for an employee).
+drop policy if exists avatars_read   on storage.objects;
+drop policy if exists avatars_insert on storage.objects;
+drop policy if exists avatars_update on storage.objects;
+drop policy if exists avatars_delete on storage.objects;
+
+create policy avatars_read on storage.objects for select
+  using (bucket_id = 'avatars');
+create policy avatars_insert on storage.objects for insert with check (
+  bucket_id = 'avatars'
+  and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+);
+create policy avatars_update on storage.objects for update using (
+  bucket_id = 'avatars'
+  and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+) with check (
+  bucket_id = 'avatars'
+  and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+);
+create policy avatars_delete on storage.objects for delete using (
+  bucket_id = 'avatars'
+  and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+);
+
+-- ---------------------------------------------------------------------------
+-- Let admins manage everyone's office days (edit hours, fix or add entries).
+-- ---------------------------------------------------------------------------
+drop policy if exists office_days_admin_all on public.office_days;
+create policy office_days_admin_all on public.office_days for all
+  using (public.is_admin()) with check (public.is_admin());

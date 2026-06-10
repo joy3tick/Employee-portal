@@ -563,3 +563,54 @@ input[type="time"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
   .cell { min-height: 54px; }
   .stat-value { font-size: 1.3rem; }
 }
+
+/* ===========================================================================
+   Profile pictures + admin user detail
+   =========================================================================== */
+.avatar.img { background-size: cover; background-position: center center; color: transparent; }
+.avatar.xl { width: 84px; height: 84px; font-size: 1.7rem; }
+
+.av-btn { border: 0; background: none; padding: 0; cursor: pointer; border-radius: 50%; line-height: 0; }
+.av-btn:hover .avatar { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--accent); }
+
+/* edit-profile modal */
+.modal-avatar { display: flex; align-items: center; gap: 16px; margin-bottom: 18px; }
+.modal-avatar-actions { display: flex; flex-direction: column; gap: 8px; }
+.modal-foot { display: flex; gap: 10px; margin-top: 18px; justify-content: flex-end; align-items: center; }
+
+/* detail header */
+.detail-head { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.dh-avatar { position: relative; flex: 0 0 auto; }
+.dh-upload {
+  position: absolute; right: -2px; bottom: -2px;
+  width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--surface);
+  background: var(--accent); color: #fff; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.dh-upload:hover { background: var(--accent-hover); }
+.dh-info { flex: 1; min-width: 180px; }
+.dh-info h1 { font-size: 1.3rem; margin: 0 0 4px; }
+.dh-meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 8px; }
+.dh-badges { display: flex; gap: 6px; }
+.dh-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* attendance metric tiles (wraps responsively, overrides .stats 4-col) */
+.stats.metric-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 0; }
+
+/* editable schedule list */
+.sched-list { display: flex; flex-direction: column; }
+.sched-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 2px; border-bottom: 1px solid #f0f2f7; }
+.sched-row:last-child { border-bottom: 0; }
+.sched-row.past { opacity: 0.6; }
+.sched-when { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.sched-date { font-weight: 600; font-size: 0.88rem; }
+
+/* clickable name button in the team table / pending list */
+.row-user {
+  display: inline-flex; align-items: center; gap: 10px;
+  border: 0; background: none; padding: 4px 6px; margin: -4px -6px;
+  border-radius: 9px; cursor: pointer; font: inherit; color: var(--text); text-align: left;
+}
+.row-user:hover { background: var(--surface-2); }
+.row-user > span { font-weight: 500; }
+.pending-row .row-user { flex: 1; min-width: 0; }
