@@ -126,6 +126,14 @@ function relWeekLabel(ws) {
   if (ws === addDaysISO(cur, -7)) return 'Last week';
   return fmtWeekRange(ws);
 }
+// [primary, secondary] labels for a week, e.g. ["This week", "Jun 8 – 14, 2026"]
+// or ["May 18 – 24", "2026"] when there's no relative label to add.
+function weekLabelParts(ws) {
+  const rel = relWeekLabel(ws);
+  const range = fmtWeekRange(ws);
+  const yr = new Date(`${ws}T00:00:00`).getFullYear();
+  return rel === range ? [range, `${yr}`] : [rel, `${range}, ${yr}`];
+}
 function ratingTier(n) { return n <= 4 ? 'low' : n <= 7 ? 'mid' : 'high'; }
 
 // ---- Time formatting (values arrive as "HH:MM" or "HH:MM:SS") ----
@@ -711,6 +719,10 @@ function viewDashboard(view) {
         </div>
       </div>
       <aside class="dash-side">
+        <div class="card pad review-card" id="review-card">
+          <div class="card-head"><h3>Your latest review</h3></div>
+          <div id="rc-body"><div class="spinner">Loading…</div></div>
+        </div>
         <div class="card pad mini-card">
           <div class="mini-head">
             <strong id="mini-title"></strong>
@@ -760,7 +772,74 @@ async function loadDashboard() {
   renderTodayCard();
   renderMonthCard();
   updateTopStack(dash.upRows);
+  loadMyReviewCard();
   if (me.role === 'admin') loadPendingCard();
+}
+
+// Show the signed-in user their own latest weekly review (employees can read
+// their own rows via RLS). Admins only see this card if they've been reviewed.
+async function loadMyReviewCard() {
+  const card = document.getElementById('review-card');
+  if (!card) return;
+  const body = card.querySelector('#rc-body');
+  const { data, error } = await supabase
+    .from('weekly_reviews')
+    .select('week_start, rating, note')
+    .eq('user_id', me.id)
+    .order('week_start', { ascending: false });
+
+  if (error) { card.remove(); return; }
+  const revs = data || [];
+  if (!revs.length) {
+    if (me.role === 'admin') { card.remove(); return; }
+    body.innerHTML = '<div class="empty" style="padding:6px 2px">No reviews yet — weekly feedback from your manager will show up here.</div>';
+    return;
+  }
+
+  const latest = revs[0];
+  const [lp, ls] = weekLabelParts(latest.week_start);
+  body.innerHTML = `
+    <div class="rc-top">
+      <span class="rating-badge lg ${ratingTier(latest.rating)}">${latest.rating}<span class="rc-outof">/10</span></span>
+      <div class="rc-meta">
+        <div class="rc-week">${esc(lp)}</div>
+        <div class="muted-mini">${esc(ls)}</div>
+      </div>
+    </div>
+    <div class="rc-note">${latest.note ? esc(latest.note) : '<span class="muted-mini">No note left.</span>'}</div>
+    ${revs.length > 1 ? `<button class="link-btn" id="rc-all" type="button">View all ${revs.length} reviews</button>` : ''}`;
+
+  const all = body.querySelector('#rc-all');
+  if (all) all.onclick = () => openMyReviewsModal(revs);
+}
+
+// Read-only history of the signed-in user's own reviews.
+function openMyReviewsModal(revs) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal card pad">
+      <h2 style="margin-bottom:4px;">Your reviews</h2>
+      <p class="subtitle" style="margin-bottom:16px;">Weekly feedback from your manager.</p>
+      <div class="myr-list">
+        ${revs.map((r) => {
+          const [lp, ls] = weekLabelParts(r.week_start);
+          return `
+            <div class="myr-row">
+              <div class="myr-head">
+                <span class="rating-badge ${ratingTier(r.rating)}">${r.rating}</span>
+                <div class="myr-week">${esc(lp)} <span class="muted-mini">· ${esc(ls)}</span></div>
+              </div>
+              <p class="myr-note${r.note ? '' : ' muted-mini'}">${r.note ? esc(r.note) : 'No note left.'}</p>
+            </div>`;
+        }).join('')}
+      </div>
+      <div class="modal-foot"><button class="btn primary" id="myr-close" type="button">Done</button></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('#myr-close').onclick = close;
 }
 
 async function shiftMini(delta) {

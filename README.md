@@ -7,7 +7,7 @@ A simple internal portal for Redline employees:
 - **Office-day scheduling** — approved employees mark which days they're in on a shared calendar and see who else is in.
 - **Profile pictures** — everyone can upload their own photo; admins can set one for any employee.
 - **Per-employee insights (admin)** — open any user to see days this week/month/all-time, hours this month/all-time, and weekly averages, then add or edit the hours on any specific day.
-- **Weekly performance reviews (admin)** — rate each employee 1–10 with a note, once per week (any time during the week). A **Reviews** page shows every employee's status for a chosen week, and each employee's profile keeps their full review history.
+- **Weekly performance reviews** — admins rate each employee 1–10 with a note, once per week (any time during the week). A **Reviews** page shows every employee's status for a chosen week, and each employee's profile keeps their full review history. **Employees see their own reviews** (rating + note) on their dashboard as soon as you post them — but can't see anyone else's or edit their own.
 
 It's a **static web app** (plain HTML/CSS/JS, no build step) that talks directly to **Supabase** (Auth + Postgres). There's no server to run — it's hosted on **Vercel** and all security is enforced by Postgres Row Level Security.
 

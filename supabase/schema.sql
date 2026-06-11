@@ -227,7 +227,12 @@ create index if not exists weekly_reviews_week_idx on public.weekly_reviews (wee
 
 alter table public.weekly_reviews enable row level security;
 
--- Only admins can read or write reviews (employees have no access).
+-- Admins can read and write every review.
 drop policy if exists weekly_reviews_admin_all on public.weekly_reviews;
 create policy weekly_reviews_admin_all on public.weekly_reviews for all
   using (public.is_admin()) with check (public.is_admin());
+
+-- Employees can READ their own reviews once posted (but never write them).
+drop policy if exists weekly_reviews_select_own on public.weekly_reviews;
+create policy weekly_reviews_select_own on public.weekly_reviews for select
+  using (user_id = auth.uid());
