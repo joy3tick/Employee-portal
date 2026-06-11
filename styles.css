@@ -732,7 +732,7 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .rc-week { font-weight: 700; font-size: 0.95rem; }
 .rc-note {
   font-size: 0.86rem; color: var(--text); white-space: pre-wrap; line-height: 1.5;
-  display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
+  overflow-wrap: anywhere; max-height: 300px; overflow-y: auto;
 }
 .review-card .link-btn { margin-top: 10px; }
 
@@ -743,4 +743,4 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .myr-row:last-child { border-bottom: 0; }
 .myr-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .myr-week { font-weight: 600; font-size: 0.9rem; }
-.myr-note { margin: 0; font-size: 0.88rem; line-height: 1.5; white-space: pre-wrap; }
+.myr-note { margin: 0; font-size: 0.88rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }

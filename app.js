@@ -807,7 +807,7 @@ async function loadMyReviewCard() {
       </div>
     </div>
     <div class="rc-note">${latest.note ? esc(latest.note) : '<span class="muted-mini">No note left.</span>'}</div>
-    ${revs.length > 1 ? `<button class="link-btn" id="rc-all" type="button">View all ${revs.length} reviews</button>` : ''}`;
+    <button class="link-btn" id="rc-all" type="button">${revs.length > 1 ? `View all ${revs.length} reviews` : 'Read full review'}</button>`;
 
   const all = body.querySelector('#rc-all');
   if (all) all.onclick = () => openMyReviewsModal(revs);
