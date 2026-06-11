@@ -1013,7 +1013,11 @@ const sched = {
   byDay: new Map(),
   selectedDay: null,
   pendingSelect: null,
+  selection: [],   // ISO days picked via drag (length > 1 => bulk mode)
 };
+// Drag-to-select controller. Mouse: press-drag. Touch: press-and-hold, then drag.
+const drag = { anchor: null, active: false, pointerType: null, startX: 0, startY: 0, timer: null };
+let pointerWired = false;
 let panelEditing = false; // showing the entry form for an already-marked day?
 
 function entrySort(a, b) {
@@ -1031,7 +1035,7 @@ function viewSchedule(view) {
     <div class="page-head">
       <div>
         <h1>Office schedule</h1>
-        <p class="subtitle" style="margin:2px 0 0;">Tap any day to mark yourself in (with hours), on vacation, or off sick.</p>
+        <p class="subtitle" style="margin:2px 0 0;">Tap a day to mark yourself in, on vacation, or off sick — or drag across days (press &amp; hold first on a phone) to book several at once.</p>
       </div>
     </div>
     <div id="stats" class="stats"></div>
@@ -1058,7 +1062,110 @@ function viewSchedule(view) {
     sched.pendingSelect = TODAY;
     loadSchedule();
   };
+  document.getElementById('grid').addEventListener('pointerdown', onGridPointerDown);
+  if (!pointerWired) {
+    document.addEventListener('pointermove', onPointerMove, { passive: false });
+    document.addEventListener('pointerup', onPointerUp);
+    document.addEventListener('pointercancel', cancelDrag);
+    // Reliably stop the page from scrolling while a touch drag-select is active.
+    document.addEventListener('touchmove', (e) => {
+      if (drag.active && drag.pointerType === 'touch') e.preventDefault();
+    }, { passive: false });
+    pointerWired = true;
+  }
   loadSchedule();
+}
+
+// ---- Drag-to-select multiple days ----------------------------------------
+function cellFromPoint(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return el ? el.closest('.cell') : null;
+}
+
+// Selectable (today or later) ISO days between two cells, in calendar order.
+function rangeIsos(anchorIso, currentIso) {
+  const isos = sched.cells.map(toISO);
+  const ai = isos.indexOf(anchorIso), ci = isos.indexOf(currentIso);
+  if (ai < 0 || ci < 0) return [anchorIso].filter((d) => d >= TODAY);
+  const [lo, hi] = ai <= ci ? [ai, ci] : [ci, ai];
+  return isos.slice(lo, hi + 1).filter((d) => d >= TODAY);
+}
+
+function paintSelection() {
+  const grid = document.getElementById('grid');
+  if (!grid) return;
+  const multi = sched.selection.length > 1;
+  const set = new Set(sched.selection);
+  grid.querySelectorAll('.cell').forEach((c) => {
+    c.classList.toggle('range', multi && set.has(c.dataset.iso));
+  });
+}
+
+function cancelDrag() {
+  clearTimeout(drag.timer);
+  drag.timer = null;
+  drag.anchor = null;
+  drag.active = false;
+  const grid = document.getElementById('grid');
+  if (grid) grid.style.touchAction = '';
+}
+
+function onGridPointerDown(e) {
+  const cell = e.target.closest('.cell');
+  if (!cell || e.button === 1 || e.button === 2) return;
+  const iso = cell.dataset.iso;
+  drag.anchor = iso;
+  drag.pointerType = e.pointerType;
+  drag.startX = e.clientX;
+  drag.startY = e.clientY;
+  drag.active = false;
+  clearTimeout(drag.timer);
+  sched.selection = [];
+  paintSelection();
+
+  if (e.pointerType === 'touch') {
+    // Press-and-hold to begin a selection (so a normal swipe still scrolls).
+    drag.timer = setTimeout(() => {
+      drag.active = true;
+      sched.selection = rangeIsos(iso, iso);
+      paintSelection();
+      const grid = document.getElementById('grid');
+      if (grid) grid.style.touchAction = 'none';
+      if (navigator.vibrate) navigator.vibrate(12);
+    }, 300);
+  } else {
+    drag.active = true; // mouse/pen: start immediately
+  }
+}
+
+function onPointerMove(e) {
+  if (!drag.anchor) return;
+  if (!drag.active) {
+    // touch, pre-hold: a real move means the user is scrolling, so bail out
+    if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 10) cancelDrag();
+    return;
+  }
+  if (drag.pointerType === 'touch') e.preventDefault();
+  const cell = cellFromPoint(e.clientX, e.clientY);
+  if (!cell || !cell.dataset.iso) return;
+  const next = rangeIsos(drag.anchor, cell.dataset.iso);
+  if (next.length !== sched.selection.length || next[next.length - 1] !== sched.selection[sched.selection.length - 1]) {
+    sched.selection = next;
+    paintSelection();
+  }
+}
+
+function onPointerUp() {
+  if (!drag.anchor) return;
+  const anchor = drag.anchor;
+  const wasActive = drag.active;
+  cancelDrag();
+  if (wasActive && sched.selection.length > 1) {
+    renderPanel(); // bulk panel
+  } else {
+    sched.selection = [];
+    selectDay(anchor); // plain click / tap → single day
+  }
 }
 
 function indexRows() {
@@ -1080,6 +1187,8 @@ function shiftMonth(delta) {
 }
 
 async function loadSchedule() {
+  sched.selection = [];
+  cancelDrag();
   sched.cells = gridCells(sched.view.year, sched.view.month);
   const from = toISO(sched.cells[0]);
   const to = toISO(sched.cells[sched.cells.length - 1]);
@@ -1168,6 +1277,8 @@ function renderCalendar() {
   if (!grid) return;
 
   grid.innerHTML = '';
+  const multi = sched.selection.length > 1;
+  const selSet = new Set(multi ? sched.selection : []);
   for (const d of sched.cells) {
     const iso = toISO(d);
     const inMonth = d.getMonth() === sched.view.month;
@@ -1175,12 +1286,14 @@ function renderCalendar() {
     const mine = list.some((a) => a.user_id === me.id);
 
     const cell = document.createElement('div');
+    cell.dataset.iso = iso;
     cell.className = 'cell'
       + (inMonth ? '' : ' muted')
       + (iso === TODAY ? ' today' : '')
       + (iso < TODAY ? ' past' : '')
       + (mine ? ' mine' : '')
-      + (iso === sched.selectedDay ? ' selected' : '');
+      + (multi && selSet.has(iso) ? ' range' : '')
+      + (!multi && iso === sched.selectedDay ? ' selected' : '');
 
     const ordered = list.slice().sort(entrySort);
     const chips = ordered.slice(0, 3).map((a) => {
@@ -1207,13 +1320,13 @@ function renderCalendar() {
     cell.innerHTML = `
       <div class="cell-top"><span class="num">${d.getDate()}</span></div>
       <div class="evts">${chips}${more}</div>`;
-    cell.onclick = () => selectDay(iso);
     grid.appendChild(cell);
   }
 }
 
 function selectDay(iso) {
   panelEditing = false;
+  sched.selection = [];
   const [y, m] = iso.split('-').map(Number);
   if (y !== sched.view.year || m - 1 !== sched.view.month) {
     sched.view = { year: y, month: m - 1 };
@@ -1229,6 +1342,7 @@ function selectDay(iso) {
 function renderPanel() {
   const panel = document.getElementById('day-panel');
   if (!panel) return;
+  if (sched.selection.length > 1) return renderBulkPanel(panel);
   const iso = sched.selectedDay;
   const dObj = new Date(`${iso}T00:00:00`);
   const isPast = iso < TODAY;
@@ -1351,6 +1465,147 @@ function renderPanel() {
   if (editBtn) editBtn.onclick = () => { panelEditing = true; renderPanel(); };
   const rmBtn = panel.querySelector('#remove-me');
   if (rmBtn) rmBtn.onclick = () => removeMe(iso);
+}
+
+// Bulk scheduler shown when more than one day is selected via drag.
+function renderBulkPanel(panel) {
+  const sel = sched.selection.slice().sort();
+  const n = sel.length;
+  const first = new Date(`${sel[0]}T00:00:00`);
+  const last = new Date(`${sel[n - 1]}T00:00:00`);
+  const sameMonth = first.getMonth() === last.getMonth() && first.getFullYear() === last.getFullYear();
+  const firstS = first.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  const lastS = last.toLocaleDateString(undefined, sameMonth ? { weekday: 'short', day: 'numeric' } : { weekday: 'short', month: 'short', day: 'numeric' });
+  const mineCount = sel.filter((iso) => (sched.byDay.get(iso) || []).some((a) => a.user_id === me.id)).length;
+
+  panel.innerHTML = `
+    <div class="card pad panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-weekday">${n} days selected</div>
+          <div class="panel-date">${firstS} – ${lastS}</div>
+        </div>
+        <button class="btn ghost sm" id="bulk-clear" type="button">Clear</button>
+      </div>
+      <div class="entry-form">
+        <div class="kind-select">
+          <button type="button" class="kind-opt active" data-kind="in">🏢 In</button>
+          <button type="button" class="kind-opt" data-kind="vacation">🌴 Vacation</button>
+          <button type="button" class="kind-opt" data-kind="sick">🤒 Sick</button>
+        </div>
+        <div class="hours-wrap">
+          <div class="hours-row">
+            <div><label>From</label><input type="time" id="h-start" value="09:00"></div>
+            <div><label>To</label><input type="time" id="h-end" value="17:00"></div>
+          </div>
+          <div class="presets">
+            <button type="button" class="chip-btn" data-preset="09:00|17:00">9–5</button>
+            <button type="button" class="chip-btn" data-preset="08:00|16:00">8–4</button>
+            <button type="button" class="chip-btn" data-preset="00:00|23:59">All day</button>
+          </div>
+          <p class="muted-mini" style="margin:8px 0 0;">Applied to all ${n} selected days.</p>
+        </div>
+        <div id="h-msg" class="msg"></div>
+        <div class="form-actions">
+          <button class="btn primary" type="button" id="bulk-save">Save ${n} days</button>
+        </div>
+        ${mineCount ? `<button class="btn ghost full" type="button" id="bulk-remove" style="margin-top:8px;">Remove me from ${mineCount} of these</button>` : ''}
+      </div>
+    </div>`;
+
+  panel.querySelectorAll('.kind-opt').forEach((b) => {
+    b.onclick = () => {
+      panel.querySelectorAll('.kind-opt').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+      const hw = panel.querySelector('.hours-wrap');
+      if (hw) hw.style.display = b.dataset.kind === 'in' ? '' : 'none';
+    };
+  });
+  panel.querySelectorAll('.chip-btn').forEach((b) => {
+    b.onclick = () => {
+      const [s, e] = b.dataset.preset.split('|');
+      panel.querySelector('#h-start').value = s;
+      panel.querySelector('#h-end').value = e;
+    };
+  });
+  panel.querySelector('#bulk-clear').onclick = () => clearSelection();
+  panel.querySelector('#bulk-save').onclick = () => {
+    const kind = panel.querySelector('.kind-opt.active').dataset.kind;
+    const msg = panel.querySelector('#h-msg');
+    if (kind === 'in') {
+      const s = panel.querySelector('#h-start').value;
+      const e = panel.querySelector('#h-end').value;
+      if (!s || !e) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
+      if (s === e) { msg.textContent = "Start and end times can't be the same."; msg.className = 'msg show error'; return; }
+      bulkSave(kind, s, e);
+    } else {
+      bulkSave(kind, null, null);
+    }
+  };
+  const rm = panel.querySelector('#bulk-remove');
+  if (rm) rm.onclick = () => bulkRemove();
+}
+
+function clearSelection() {
+  const first = sched.selection[0];
+  sched.selection = [];
+  if (first) sched.selectedDay = first;
+  renderCalendar();
+  renderPanel();
+}
+
+async function bulkSave(kind, start, end) {
+  const days = sched.selection.slice();
+  if (!days.length) return;
+  const rows = days.map((iso) => ({
+    day: iso,
+    user_id: me.id,
+    display_name: me.full_name || me.email,
+    avatar_url: me.avatar_url || null,
+    kind,
+    start_time: kind === 'in' ? start : null,
+    end_time: kind === 'in' ? end : null,
+  }));
+  const daySet = new Set(days);
+  const snapshot = sched.rows;
+  sched.rows = sched.rows.filter((r) => !(r.user_id === me.id && daySet.has(r.day))).concat(rows);
+  sched.selection = [];
+  sched.selectedDay = days[0];
+  indexRows();
+  renderAll();
+
+  const { error } = await supabase.from('office_days').upsert(rows, { onConflict: 'user_id,day' });
+  if (error) {
+    sched.rows = snapshot;
+    indexRows();
+    renderAll();
+    alert(error.message);
+    return;
+  }
+  toast(`Scheduled ${days.length} day${days.length === 1 ? '' : 's'}`);
+}
+
+async function bulkRemove() {
+  const days = sched.selection.slice();
+  const daySet = new Set(days);
+  const removed = sched.rows.filter((r) => r.user_id === me.id && daySet.has(r.day));
+  if (!removed.length) return;
+  const snapshot = sched.rows;
+  sched.rows = sched.rows.filter((r) => !(r.user_id === me.id && daySet.has(r.day)));
+  sched.selection = [];
+  sched.selectedDay = days[0];
+  indexRows();
+  renderAll();
+
+  const { error } = await supabase.from('office_days').delete().eq('user_id', me.id).in('day', days);
+  if (error) {
+    sched.rows = snapshot;
+    indexRows();
+    renderAll();
+    alert(error.message);
+    return;
+  }
+  toast(`Removed you from ${removed.length} day${removed.length === 1 ? '' : 's'}`);
 }
 
 async function saveEntry(iso, kind, start, end) {

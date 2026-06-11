@@ -388,6 +388,11 @@ td .actions, .pending-row .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .cell.mine { background: var(--accent-soft); }
 .cell.mine:hover { background: rgba(225, 29, 43, 0.16); }
 .cell.selected { box-shadow: inset 0 0 0 2px var(--accent); z-index: 1; }
+/* drag-to-select range */
+.month-grid { touch-action: pan-y; }
+.month-grid, .cell { user-select: none; -webkit-user-select: none; }
+.cell.range { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); z-index: 1; }
+.cell.range:hover { background: rgba(225, 29, 43, 0.16); }
 .cell-top { display: flex; align-items: center; }
 .cell .num { font-size: 0.76rem; font-weight: 600; color: var(--text); }
 .cell.today .num {
