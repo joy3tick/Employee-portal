@@ -205,3 +205,29 @@ create policy avatars_delete on storage.objects for delete using (
 drop policy if exists office_days_admin_all on public.office_days;
 create policy office_days_admin_all on public.office_days for all
   using (public.is_admin()) with check (public.is_admin());
+
+-- ---------------------------------------------------------------------------
+-- Weekly performance reviews (admin-only)
+-- ---------------------------------------------------------------------------
+-- One review per employee per week. week_start is the Monday of the reviewed
+-- week, so the unique (user_id, week_start) constraint enforces "once a week".
+create table if not exists public.weekly_reviews (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null references public.profiles (id) on delete cascade,
+  week_start  date not null,
+  rating      int  not null check (rating between 1 and 10),
+  note        text not null default '',
+  reviewer_id uuid references public.profiles (id) on delete set null,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  unique (user_id, week_start)
+);
+create index if not exists weekly_reviews_user_idx on public.weekly_reviews (user_id);
+create index if not exists weekly_reviews_week_idx on public.weekly_reviews (week_start);
+
+alter table public.weekly_reviews enable row level security;
+
+-- Only admins can read or write reviews (employees have no access).
+drop policy if exists weekly_reviews_admin_all on public.weekly_reviews;
+create policy weekly_reviews_admin_all on public.weekly_reviews for all
+  using (public.is_admin()) with check (public.is_admin());
