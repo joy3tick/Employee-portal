@@ -2246,15 +2246,17 @@ async function loadTasks() {
 
 function taskCardHTML(t, isAdmin) {
   const overdue = t.due_date && t.due_date < TODAY && t.status !== 'done';
+  const scheduledPending = isAdmin && t.scheduled_for && t.scheduled_for > TODAY;
   const opt = (v, label) => `<option value="${v}"${t.status === v ? ' selected' : ''}>${label}</option>`;
   const meta = isAdmin
     ? `<div class="task-who">${avatarHTML(t.assignee_name || '?', t.assignee_id === me.id, 'sm', t.assignee_avatar)}<span>${esc(t.assignee_name || 'Someone')}</span></div>`
     : `<span class="muted-mini">Assigned by ${esc(t.assigned_by_name || 'your admin')}</span>`;
   return `
-    <div class="task-card${t.status === 'done' ? ' done' : ''}">
+    <div class="task-card${t.status === 'done' ? ' done' : ''}${scheduledPending ? ' scheduled' : ''}">
       <div class="task-main">
         <div class="task-top">
           <span class="prio ${t.priority}">${PRIORITY_LABEL[t.priority] || 'Normal'}</span>
+          ${scheduledPending ? `<span class="task-sched">🗓 Shows ${fmtDate(t.scheduled_for)}</span>` : ''}
           ${t.due_date ? `<span class="task-due${overdue ? ' overdue' : ''}">Due ${fmtDate(t.due_date)}</span>` : ''}
         </div>
         <div class="task-title">${esc(t.title)}</div>
@@ -2361,14 +2363,17 @@ async function openTaskModal(existing) {
       <input id="t-title" type="text" maxlength="120" value="${esc(existing ? existing.title : '')}" placeholder="e.g. Finish the Q3 report" />
       <label style="margin-top:12px;">Details <span style="opacity:.7">(optional)</span></label>
       <textarea id="t-desc" rows="3" maxlength="2000" placeholder="Any context or steps…">${esc(existing ? existing.description : '')}</textarea>
+      <label style="margin-top:12px;">Priority</label>
+      <select id="t-prio" class="select">
+        <option value="low"${prio === 'low' ? ' selected' : ''}>Low</option>
+        <option value="normal"${prio === 'normal' ? ' selected' : ''}>Normal</option>
+        <option value="high"${prio === 'high' ? ' selected' : ''}>High</option>
+      </select>
       <div class="t-row">
-        <div><label>Priority</label><select id="t-prio" class="select">
-          <option value="low"${prio === 'low' ? ' selected' : ''}>Low</option>
-          <option value="normal"${prio === 'normal' ? ' selected' : ''}>Normal</option>
-          <option value="high"${prio === 'high' ? ' selected' : ''}>High</option>
-        </select></div>
+        <div><label>Show on <span style="opacity:.7">(optional)</span></label><input type="date" id="t-sched" value="${existing && existing.scheduled_for ? existing.scheduled_for : ''}" /></div>
         <div><label>Due date <span style="opacity:.7">(optional)</span></label><input type="date" id="t-due" value="${existing && existing.due_date ? existing.due_date : ''}" /></div>
       </div>
+      <p class="muted-mini" style="margin:8px 0 0;">“Show on” keeps the task hidden from them until that day. Leave blank to show it right away.</p>
       <div id="t-msg" class="msg"></div>
       <div class="modal-foot">
         ${existing ? '<button class="btn danger" id="t-delete" type="button" style="margin-right:auto;">Delete</button>' : ''}
@@ -2398,6 +2403,7 @@ async function openTaskModal(existing) {
       assignee_avatar: emp.avatar_url || null,
       priority: overlay.querySelector('#t-prio').value,
       due_date: overlay.querySelector('#t-due').value || null,
+      scheduled_for: overlay.querySelector('#t-sched').value || null,
     };
     const saveBtn = overlay.querySelector('#t-save');
     saveBtn.disabled = true;

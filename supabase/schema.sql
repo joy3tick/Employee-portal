@@ -255,11 +255,15 @@ create table if not exists public.tasks (
   status           text not null default 'todo'   check (status in ('todo', 'in_progress', 'done')),
   priority         text not null default 'normal' check (priority in ('low', 'normal', 'high')),
   due_date         date,
+  scheduled_for    date,           -- if set, the assignee only sees it from this day on
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now()
 );
-create index if not exists tasks_assignee_idx on public.tasks (assignee_id);
-create index if not exists tasks_status_idx   on public.tasks (status);
+-- In case an older tasks table already exists without the "show on" date:
+alter table public.tasks add column if not exists scheduled_for date;
+create index if not exists tasks_assignee_idx  on public.tasks (assignee_id);
+create index if not exists tasks_status_idx    on public.tasks (status);
+create index if not exists tasks_scheduled_idx on public.tasks (scheduled_for);
 
 alter table public.tasks enable row level security;
 
@@ -270,8 +274,9 @@ drop policy if exists tasks_select_own on public.tasks;
 drop policy if exists tasks_update_own on public.tasks;
 create policy tasks_admin_all on public.tasks for all
   using (public.is_admin()) with check (public.is_admin());
+-- A scheduled task stays hidden from the employee until its "show on" day.
 create policy tasks_select_own on public.tasks for select
-  using (assignee_id = auth.uid());
+  using (assignee_id = auth.uid() and (scheduled_for is null or scheduled_for <= current_date));
 create policy tasks_update_own on public.tasks for update
   using (assignee_id = auth.uid()) with check (assignee_id = auth.uid());
 
@@ -292,6 +297,7 @@ begin
     new.assigned_by_name := old.assigned_by_name;
     new.priority         := old.priority;
     new.due_date         := old.due_date;
+    new.scheduled_for    := old.scheduled_for;
   end if;
   new.updated_at := now();
   return new;

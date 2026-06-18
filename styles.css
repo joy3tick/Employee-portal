@@ -782,6 +782,8 @@ select.select:focus, select.task-status:focus { border-color: var(--accent); box
 .prio.low { background: var(--surface-2); color: var(--muted); }
 .task-due { font-size: 0.74rem; color: var(--muted); font-weight: 600; }
 .task-due.overdue { color: var(--accent); }
+.task-sched { font-size: 0.66rem; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: var(--info-soft); color: var(--info); }
+.task-card.scheduled { border-left: 3px solid var(--info); padding-left: 10px; }
 
 @media (max-width: 640px) {
   .task-cards { padding: 4px 14px; }
