@@ -822,3 +822,115 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 @media (max-width: 420px) {
   .goal-field-row { grid-template-columns: 1fr; }
 }
+
+/* ===========================================================================
+   Task board (Kanban)
+   =========================================================================== */
+.th-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* segmented "Everyone / Just me" toggle */
+.seg { display: inline-flex; background: var(--bg-2); padding: 4px; border-radius: 10px; gap: 2px; }
+.seg button {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  font-family: inherit; font-weight: 600; font-size: 0.84rem; padding: 7px 13px; border-radius: 8px;
+}
+.seg button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+/* board: four columns that scroll horizontally when they don't fit */
+.kanban {
+  display: flex; gap: 14px; align-items: flex-start;
+  overflow-x: auto; padding-bottom: 10px; scroll-snap-type: x proximity;
+}
+.kanban-col {
+  flex: 1 1 0; min-width: 248px; scroll-snap-align: start;
+  background: var(--surface-2); border-radius: 14px; padding: 10px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.kanban-col.drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--accent-soft); }
+
+.kcol-head { display: flex; align-items: center; gap: 8px; padding: 4px 4px 2px; }
+.kcol-title { font-weight: 700; font-size: 0.9rem; }
+.kdot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.kcol-head.inbound { color: var(--muted); }
+.kcol-head.in_progress { color: var(--amber); }
+.kcol-head.awaiting_review { color: var(--vac); }
+.kcol-head.completed { color: var(--green); }
+.kcol-title, .kcol-count { color: var(--text); }
+.kcol-count {
+  min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px;
+  background: var(--surface); color: var(--muted); font-size: 0.72rem; font-weight: 800;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.kcol-add {
+  margin-left: auto; width: 26px; height: 26px; padding: 0; border-radius: 8px;
+  border: 0; background: var(--surface); color: var(--muted); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.kcol-add:hover { color: var(--accent); }
+.kcol-body { display: flex; flex-direction: column; gap: 9px; min-height: 56px; }
+.kcol-empty {
+  color: var(--muted); font-size: 0.82rem; text-align: center;
+  padding: 16px 8px; border: 1px dashed var(--border); border-radius: 10px;
+}
+
+/* cards */
+.kanban-card {
+  background: var(--surface); border-radius: 11px; padding: 11px 12px;
+  box-shadow: 0 2px 6px rgba(43, 52, 84, 0.06); border-left: 3px solid var(--border);
+  transition: box-shadow 0.12s, transform 0.05s;
+}
+.kanban-card[draggable="true"] { cursor: grab; }
+.kanban-card[draggable="true"]:active { cursor: grabbing; }
+.kanban-card:hover { box-shadow: 0 6px 16px rgba(43, 52, 84, 0.12); }
+.kanban-card.dragging { opacity: 0.45; }
+.kanban-card.status-in_progress { border-left-color: var(--amber); }
+.kanban-card.status-awaiting_review { border-left-color: var(--vac); }
+.kanban-card.status-completed { border-left-color: var(--green); }
+.kanban-card.status-completed .kc-title { color: var(--muted); }
+
+.kc-main { cursor: pointer; }
+.kc-title { font-weight: 600; font-size: 0.9rem; line-height: 1.35; overflow-wrap: anywhere; }
+.kc-desc {
+  margin-top: 4px; font-size: 0.8rem; color: var(--muted); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.kc-foot { display: flex; align-items: center; gap: 8px; margin-top: 11px; }
+.kc-assignee { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.kc-who { font-size: 0.76rem; color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kc-actions { display: flex; align-items: center; gap: 5px; margin-left: auto; flex: 0 0 auto; }
+.kc-btn {
+  height: 28px; min-width: 28px; padding: 0 7px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer;
+  font-family: inherit; font-weight: 700; font-size: 0.74rem; transition: all 0.12s;
+}
+.kc-btn:hover { background: var(--surface-2); color: var(--text); border-color: var(--accent); }
+.kc-btn.done { color: var(--green); border-color: var(--green-soft); }
+.kc-btn.done:hover { background: var(--green); color: #fff; border-color: var(--green); }
+.kc-btn.del:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.kc-wait { font-size: 0.72rem; font-weight: 700; color: var(--amber); white-space: nowrap; }
+
+/* task modal */
+.tk-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.tk-readonly { font-size: 0.92rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; padding: 2px 0; }
+.tk-readonly.strong { font-weight: 700; font-size: 1.02rem; }
+.badge.stage-inbound { background: var(--surface-2); color: var(--muted); }
+.badge.stage-in_progress { background: var(--amber-soft); color: var(--amber); }
+.badge.stage-awaiting_review { background: var(--vac-soft); color: var(--vac); }
+.badge.stage-completed { background: var(--green-soft); color: var(--green); }
+
+/* dashboard "your tasks" card */
+.tk-mini { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.tk-chip { border-radius: 9px; padding: 8px 4px; text-align: center; background: var(--surface-2); }
+.tk-chip-n { display: block; font-weight: 800; font-size: 1.1rem; line-height: 1; }
+.tk-chip-l { display: block; font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); margin-top: 3px; }
+.tk-chip.stage-inbound { color: var(--muted); }
+.tk-chip.stage-in_progress { background: var(--amber-soft); color: var(--amber); }
+.tk-chip.stage-awaiting_review { background: var(--vac-soft); color: var(--vac); }
+.tk-chip.stage-completed { background: var(--green-soft); color: var(--green); }
+.tk-mini-note { margin-top: 10px; }
+
+@media (max-width: 640px) {
+  .th-actions { width: 100%; }
+  .th-actions .btn { flex: 1; }
+}

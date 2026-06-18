@@ -188,6 +188,10 @@ function icon(name, cls = 'ic') {
     star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
     target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5.5"/><circle cx="12" cy="12" r="2"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
+    board: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>',
+    'arrow-left': '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+    'arrow-right': '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
+    trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
   };
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -233,6 +237,10 @@ let clockTimer = null;
 const ui = { view: 'dashboard', search: '', teamUser: null };
 const reviews = { weekStart: weekStartISO() };
 const goals = { weekStart: weekStartISO(), rows: [] };
+const tasks = { rows: [], filter: 'all' };
+const TASK_STAGES = ['inbound', 'in_progress', 'awaiting_review', 'completed'];
+const TASK_LABEL = { inbound: 'Inbound', in_progress: 'In progress', awaiting_review: 'Awaiting review', completed: 'Completed' };
+let taskDragId = null; // id of the card being dragged (desktop drag-and-drop)
 
 async function fetchProfile(userId) {
   for (let i = 0; i < 4; i++) {
@@ -315,6 +323,7 @@ async function uploadAvatar(uid, file) {
   if (pErr) throw pErr;
   await supabase.from('office_days').update({ avatar_url: url }).eq('user_id', uid);
   await supabase.from('goals').update({ avatar_url: url }).eq('user_id', uid);
+  await supabase.from('tasks').update({ assignee_avatar: url }).eq('assignee_id', uid);
   return url;
 }
 
@@ -324,6 +333,7 @@ async function removeAvatar(uid) {
   if (error) throw error;
   await supabase.from('office_days').update({ avatar_url: null }).eq('user_id', uid);
   await supabase.from('goals').update({ avatar_url: null }).eq('user_id', uid);
+  await supabase.from('tasks').update({ assignee_avatar: null }).eq('assignee_id', uid);
   if (uid === me.id) me.avatar_url = null;
 }
 
@@ -486,6 +496,7 @@ function openProfileModal() {
       if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
       await supabase.from('office_days').update({ display_name: name }).eq('user_id', me.id);
       await supabase.from('goals').update({ display_name: name }).eq('user_id', me.id);
+      await supabase.from('tasks').update({ assignee_name: name }).eq('assignee_id', me.id);
       me.full_name = name;
       dirty = true;
     }
@@ -558,6 +569,7 @@ function renderShell() {
           <button class="nav-item" data-view="dashboard" type="button">${icon('dash')}<span class="txt">Dashboard</span></button>
           <button class="nav-item" data-view="schedule" type="button">${icon('cal')}<span class="txt">Schedule</span></button>
           <button class="nav-item" data-view="goals" type="button">${icon('target')}<span class="txt">Goals</span></button>
+          <button class="nav-item" data-view="tasks" type="button">${icon('board')}<span class="txt">Tasks</span></button>
           ${isAdmin ? `<button class="nav-item" data-view="team" type="button">${icon('team')}<span class="txt">Team</span><span class="nav-badge" id="nav-pending" style="display:none"></span></button>` : ''}
           ${isAdmin ? `<button class="nav-item" data-view="reviews" type="button">${icon('star')}<span class="txt">Reviews</span></button>` : ''}
           <button class="nav-item" id="nav-settings" type="button">${icon('gear')}<span class="txt">Settings</span></button>
@@ -624,6 +636,7 @@ function setView(v) {
   if (!view) return;
   if (v === 'dashboard') viewDashboard(view);
   else if (v === 'goals') viewGoals(view);
+  else if (v === 'tasks') viewTasks(view);
   else if (v === 'team') viewTeam(view);
   else if (v === 'reviews') viewReviews(view);
   else viewSchedule(view);
@@ -731,6 +744,10 @@ function viewDashboard(view) {
           <div class="card-head"><h3>Your goals this week</h3><button class="link-btn" id="gc-all" type="button">Open</button></div>
           <div id="gc-body"><div class="spinner">Loading…</div></div>
         </div>
+        <div class="card pad tasks-card" id="tasks-card">
+          <div class="card-head"><h3>Your tasks</h3><button class="link-btn" id="tc-all" type="button">Open board</button></div>
+          <div id="tc-body"><div class="spinner">Loading…</div></div>
+        </div>
         <div class="card pad review-card" id="review-card">
           <div class="card-head"><h3>Your latest review</h3></div>
           <div id="rc-body"><div class="spinner">Loading…</div></div>
@@ -764,6 +781,7 @@ function viewDashboard(view) {
   document.getElementById('mini-prev').onclick = () => shiftMini(-1);
   document.getElementById('mini-next').onclick = () => shiftMini(1);
   document.getElementById('gc-all').onclick = () => setView('goals');
+  document.getElementById('tc-all').onclick = () => setView('tasks');
 
   loadDashboard();
 }
@@ -786,6 +804,7 @@ async function loadDashboard() {
   renderMonthCard();
   updateTopStack(dash.upRows);
   loadMyGoalsCard();
+  loadMyTasksCard();
   loadMyReviewCard();
   if (me.role === 'admin') loadPendingCard();
 }
@@ -2629,6 +2648,366 @@ function paintDashGoals(body, list) {
     `<div class="goal-list">${list.map((g) => goalRowHTML(g, true)).join('')}</div>
      <div class="muted-mini gc-foot">${done}/${list.length} on track this week</div>`;
   wireGoalRows(body, list, () => paintDashGoals(body, list), loadMyGoalsCard);
+}
+
+// ===========================================================================
+// Task board — a Trello-style Kanban: Inbound → In progress → Awaiting review
+// → Completed. Employees move their own cards through the first three columns;
+// only an ADMIN can move a card into (or out of) Completed. Once completed, the
+// assignee or an admin can delete it — or just leave it there.
+// ===========================================================================
+// Who can do what (mirrored by the RLS policies in supabase/schema.sql):
+function taskCanMove(t, toStatus) {
+  if (!TASK_STAGES.includes(toStatus)) return false;
+  if (me.role === 'admin') return true;                       // admins move anything
+  if (t.assignee_id !== me.id) return false;                  // only your own cards
+  if (t.status === 'completed' || toStatus === 'completed') return false; // completion is admin-gated
+  return true;
+}
+function taskCanDelete(t) {
+  return me.role === 'admin' || (t.assignee_id === me.id && t.status === 'completed');
+}
+function taskCanEdit(t) {
+  return me.role === 'admin' || (t.assignee_id === me.id && t.status !== 'completed');
+}
+// Most recently touched first, so a card you just moved pops to the top.
+function taskSort(a, b) {
+  return (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || '');
+}
+
+function viewTasks(view) {
+  const isAdmin = me.role === 'admin';
+  view.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1>Task board</h1>
+        <p class="subtitle" style="margin:2px 0 0;">Move work from Inbound → In progress → Awaiting review. ${isAdmin ? 'You sign off the final ✓ Completed.' : 'An admin signs off the final ✓ Completed.'}</p>
+      </div>
+      <div class="th-actions">
+        <div class="seg" id="task-filter">
+          <button data-filter="all" class="${tasks.filter === 'all' ? 'active' : ''}" type="button">Everyone</button>
+          <button data-filter="mine" class="${tasks.filter === 'mine' ? 'active' : ''}" type="button">Just me</button>
+        </div>
+        <button class="btn primary" id="task-add" type="button">${icon('plus', 'ic sm')}<span>New task</span></button>
+      </div>
+    </div>
+    <div id="task-stats" class="stats"></div>
+    <div class="kanban" id="kanban"><div class="spinner">Loading…</div></div>`;
+
+  view.querySelectorAll('#task-filter button').forEach((b) => {
+    b.onclick = () => {
+      tasks.filter = b.dataset.filter;
+      view.querySelectorAll('#task-filter button').forEach((x) => x.classList.toggle('active', x === b));
+      renderBoard();
+    };
+  });
+  view.querySelector('#task-add').onclick = () => openTaskModal(null);
+  loadTasks();
+}
+
+async function loadTasks() {
+  const { data, error } = await supabase
+    .from('tasks')
+    .select('id, title, description, status, assignee_id, assignee_name, assignee_avatar, created_by, created_at, updated_at, completed_at')
+    .order('updated_at', { ascending: false });
+  const board = document.getElementById('kanban');
+  if (error) {
+    if (board) board.innerHTML = `<div class="empty">Couldn't load the board: ${esc(error.message)}</div>`;
+    return;
+  }
+  tasks.rows = data || [];
+  renderBoard();
+}
+
+function renderBoard() {
+  const board = document.getElementById('kanban');
+  if (!board) return;
+  const rows = tasks.filter === 'mine' ? tasks.rows.filter((t) => t.assignee_id === me.id) : tasks.rows;
+  renderTaskStats(rows);
+  const hint = {
+    inbound: tasks.filter === 'mine' ? 'Add a task to get the ball rolling.' : 'Nothing new here.',
+    in_progress: 'Nothing in progress.',
+    awaiting_review: 'Nothing waiting on review.',
+    completed: 'No completed tasks yet.',
+  };
+  board.innerHTML = TASK_STAGES.map((s) => {
+    const list = rows.filter((t) => t.status === s).sort(taskSort);
+    return `
+      <div class="kanban-col" data-status="${s}">
+        <div class="kcol-head ${s}">
+          <span class="kdot"></span>
+          <span class="kcol-title">${TASK_LABEL[s]}</span>
+          <span class="kcol-count">${list.length}</span>
+          ${s === 'inbound' ? `<button class="kcol-add" id="kcol-add" type="button" title="Add task">${icon('plus', 'ic sm')}</button>` : ''}
+        </div>
+        <div class="kcol-body">
+          ${list.length ? list.map(taskCardHTML).join('') : `<div class="kcol-empty">${hint[s]}</div>`}
+        </div>
+      </div>`;
+  }).join('');
+  wireBoard(board);
+}
+
+function renderTaskStats(rows) {
+  const el = document.getElementById('task-stats');
+  if (!el) return;
+  const sub = { inbound: 'to pick up', in_progress: 'underway', awaiting_review: 'need sign-off', completed: 'done & dusted' };
+  el.innerHTML = TASK_STAGES.map((s) =>
+    statCard(TASK_LABEL[s], rows.filter((t) => t.status === s).length, `<span class="muted-mini">${sub[s]}</span>`)
+  ).join('');
+}
+
+function taskCardHTML(t) {
+  const meFlag = t.assignee_id === me.id;
+  const canDrag = me.role === 'admin' || (meFlag && t.status !== 'completed');
+  return `
+    <div class="kanban-card status-${t.status}" data-task="${esc(t.id)}" draggable="${canDrag ? 'true' : 'false'}">
+      <div class="kc-main">
+        <div class="kc-title">${esc(t.title)}</div>
+        ${t.description ? `<div class="kc-desc">${esc(t.description)}</div>` : ''}
+      </div>
+      <div class="kc-foot">
+        <div class="kc-assignee" title="${esc(t.assignee_name || 'Unassigned')}">
+          ${avatarHTML(t.assignee_name || '?', meFlag, 'sm', t.assignee_avatar)}
+          <span class="kc-who">${esc(shortName(t.assignee_name) || 'Unassigned')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>
+        </div>
+        ${taskCardControlsHTML(t)}
+      </div>
+    </div>`;
+}
+
+function taskCardControlsHTML(t) {
+  const i = TASK_STAGES.indexOf(t.status);
+  const prev = TASK_STAGES[i - 1];
+  const next = TASK_STAGES[i + 1];
+  const parts = [];
+  if (prev && taskCanMove(t, prev)) {
+    parts.push(`<button class="kc-btn" data-move="${prev}" type="button" title="Back to ${TASK_LABEL[prev]}">${icon('arrow-left', 'ic sm')}</button>`);
+  }
+  if (next === 'completed') {
+    if (me.role === 'admin') parts.push(`<button class="kc-btn done" data-move="completed" type="button" title="Approve & complete">${icon('check', 'ic sm')}<span>Complete</span></button>`);
+    else if (t.assignee_id === me.id) parts.push('<span class="kc-wait" title="An admin will sign this off">⏳ Admin sign-off</span>');
+  } else if (next && taskCanMove(t, next)) {
+    parts.push(`<button class="kc-btn" data-move="${next}" type="button" title="Move to ${TASK_LABEL[next]}">${icon('arrow-right', 'ic sm')}</button>`);
+  }
+  if (taskCanDelete(t)) {
+    parts.push(`<button class="kc-btn del" data-del type="button" title="Delete task">${icon('trash', 'ic sm')}</button>`);
+  }
+  return parts.length ? `<div class="kc-actions">${parts.join('')}</div>` : '';
+}
+
+function wireBoard(board) {
+  const byId = new Map(tasks.rows.map((t) => [t.id, t]));
+  const addBtn = board.querySelector('#kcol-add');
+  if (addBtn) addBtn.onclick = () => openTaskModal(null);
+
+  board.querySelectorAll('.kanban-card').forEach((el) => {
+    const t = byId.get(el.dataset.task);
+    if (!t) return;
+    el.querySelectorAll('[data-move]').forEach((b) => {
+      b.onclick = (e) => { e.stopPropagation(); moveTask(t, b.dataset.move); };
+    });
+    const del = el.querySelector('[data-del]');
+    if (del) del.onclick = (e) => { e.stopPropagation(); confirmDeleteTask(t); };
+    el.querySelector('.kc-main').onclick = () => openTaskModal(t);
+
+    // Native drag-and-drop (desktop pointer). Touch devices use the arrow buttons.
+    if (el.getAttribute('draggable') === 'true') {
+      el.addEventListener('dragstart', (e) => {
+        taskDragId = t.id;
+        el.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', t.id); } catch (_) {}
+      });
+      el.addEventListener('dragend', () => {
+        taskDragId = null;
+        el.classList.remove('dragging');
+        board.querySelectorAll('.kanban-col').forEach((c) => c.classList.remove('drop-target'));
+      });
+    }
+  });
+
+  board.querySelectorAll('.kanban-col').forEach((col) => {
+    col.addEventListener('dragover', (e) => {
+      const t = tasks.rows.find((x) => x.id === taskDragId);
+      if (!t || !taskCanMove(t, col.dataset.status)) return; // not a valid drop target
+      e.preventDefault();
+      col.classList.add('drop-target');
+    });
+    col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('drop-target'); });
+    col.addEventListener('drop', (e) => {
+      e.preventDefault();
+      col.classList.remove('drop-target');
+      const id = taskDragId || (e.dataTransfer ? e.dataTransfer.getData('text/plain') : null);
+      const t = tasks.rows.find((x) => x.id === id);
+      if (t) moveTask(t, col.dataset.status);
+    });
+  });
+}
+
+async function moveTask(t, toStatus) {
+  if (t.status === toStatus) return;
+  if (!taskCanMove(t, toStatus)) {
+    toast(toStatus === 'completed' ? 'Only an admin can mark a task complete.' : "You can't move that task there.");
+    return;
+  }
+  const prev = { status: t.status, updated_at: t.updated_at, completed_at: t.completed_at };
+  const nowISO = new Date().toISOString();
+  const patch = { status: toStatus, updated_at: nowISO };
+  if (toStatus === 'completed') { patch.completed_at = nowISO; patch.completed_by = me.id; }
+  else { patch.completed_at = null; patch.completed_by = null; }
+  Object.assign(t, { status: toStatus, updated_at: nowISO, completed_at: patch.completed_at });
+  renderBoard();
+  const { error } = await supabase.from('tasks').update(patch).eq('id', t.id);
+  if (error) { Object.assign(t, prev); renderBoard(); toast(error.message); return; }
+  if (toStatus === 'completed') toast('🎉 Task completed!');
+}
+
+function confirmDeleteTask(t) {
+  if (!taskCanDelete(t)) { toast("You can't delete that task yet."); return; }
+  openConfirm({
+    title: 'Delete task?',
+    body: `“${t.title}” will be removed for everyone. This can't be undone.`,
+    confirmLabel: 'Delete',
+    danger: true,
+    onConfirm: async () => {
+      const snapshot = tasks.rows;
+      tasks.rows = tasks.rows.filter((x) => x.id !== t.id);
+      renderBoard();
+      const { error } = await supabase.from('tasks').delete().eq('id', t.id);
+      if (error) { tasks.rows = snapshot; renderBoard(); toast(error.message); return; }
+      toast('Task deleted');
+    },
+  });
+}
+
+// Create or view/edit a task. Admins get an assignee picker; the modal is
+// read-only for cards you don't own (transparency without edit rights).
+async function openTaskModal(existing) {
+  const creating = !existing;
+  const editable = creating || taskCanEdit(existing);
+  const isAdmin = me.role === 'admin';
+  const users = isAdmin && editable ? await fetchApprovedUsers() : null;
+  const curAssigneeId = existing ? existing.assignee_id : me.id;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal card pad">
+      <div class="tk-head">
+        <h2 style="margin:0;">${creating ? 'New task' : editable ? 'Edit task' : 'Task'}</h2>
+        ${existing ? `<span class="badge stage-${existing.status}">${TASK_LABEL[existing.status]}</span>` : ''}
+      </div>
+      <label style="margin-top:14px;">Title</label>
+      ${editable
+        ? `<input id="tk-title" type="text" maxlength="140" placeholder="What needs doing?" value="${esc(existing ? existing.title : '')}" />`
+        : `<div class="tk-readonly strong">${esc(existing.title)}</div>`}
+      <label style="margin-top:14px;">Details <span style="opacity:.7">(optional)</span></label>
+      ${editable
+        ? `<textarea id="tk-desc" rows="4" maxlength="2000" placeholder="Context, links, what 'done' looks like…">${esc(existing ? existing.description : '')}</textarea>`
+        : `<div class="tk-readonly">${existing.description ? esc(existing.description) : '<span class="muted-mini">No details.</span>'}</div>`}
+      ${isAdmin && editable && users ? `
+        <label style="margin-top:14px;">Assignee</label>
+        <select id="tk-assignee" class="form-select">
+          ${users.map((u) => `<option value="${esc(u.id)}"${u.id === curAssigneeId ? ' selected' : ''}>${esc(u.full_name || u.email)}${u.id === me.id ? ' (you)' : ''}</option>`).join('')}
+        </select>` : ''}
+      ${existing && existing.status === 'completed' && existing.completed_at ? `<p class="muted-mini" style="margin:14px 0 0;">✓ Completed ${esc(fmtDate(existing.completed_at.slice(0, 10)))}.</p>` : ''}
+      <div id="tk-msg" class="msg"></div>
+      <div class="modal-foot">
+        ${existing && taskCanDelete(existing) ? '<button class="btn danger" id="tk-del" type="button" style="margin-right:auto;">Delete</button>' : ''}
+        <button class="btn ghost" id="tk-cancel" type="button">${editable ? 'Cancel' : 'Close'}</button>
+        ${editable ? `<button class="btn primary" id="tk-save" type="button">${creating ? 'Add task' : 'Save'}</button>` : ''}
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  const msg = overlay.querySelector('#tk-msg');
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('#tk-cancel').onclick = close;
+  const titleEl = overlay.querySelector('#tk-title');
+  if (titleEl) { titleEl.focus(); titleEl.select(); }
+
+  const delBtn = overlay.querySelector('#tk-del');
+  if (delBtn) delBtn.onclick = () => { close(); confirmDeleteTask(existing); };
+
+  const saveBtn = overlay.querySelector('#tk-save');
+  if (saveBtn) saveBtn.onclick = async () => {
+    const title = titleEl.value.trim();
+    if (!title) { msg.textContent = 'Give the task a title.'; msg.className = 'msg show error'; return; }
+    const description = overlay.querySelector('#tk-desc').value.trim();
+    const sel = overlay.querySelector('#tk-assignee');
+    let assignee = (sel && users) ? users.find((u) => u.id === sel.value) : null;
+    if (creating && !assignee) assignee = { id: me.id, full_name: me.full_name, email: me.email, avatar_url: me.avatar_url };
+    saveBtn.disabled = true;
+    let error;
+    if (creating) {
+      ({ error } = await supabase.from('tasks').insert({
+        title, description, status: 'inbound',
+        assignee_id: assignee.id,
+        assignee_name: assignee.full_name || assignee.email || '',
+        assignee_avatar: assignee.avatar_url || null,
+        created_by: me.id,
+      }));
+    } else {
+      const patch = { title, description, updated_at: new Date().toISOString() };
+      if (assignee) {
+        patch.assignee_id = assignee.id;
+        patch.assignee_name = assignee.full_name || assignee.email || '';
+        patch.assignee_avatar = assignee.avatar_url || null;
+      }
+      ({ error } = await supabase.from('tasks').update(patch).eq('id', existing.id));
+    }
+    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
+    close(); toast(creating ? 'Task added' : 'Task saved'); loadTasks();
+  };
+}
+
+// Small reusable confirm dialog.
+function openConfirm({ title, body, confirmLabel = 'Confirm', danger = false, onConfirm }) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal card pad" style="max-width:380px;">
+      <h2 style="margin-bottom:6px;">${esc(title)}</h2>
+      <p class="subtitle" style="margin-bottom:18px;">${esc(body)}</p>
+      <div class="modal-foot">
+        <button class="btn ghost" id="cf-cancel" type="button">Cancel</button>
+        <button class="btn ${danger ? 'danger' : 'primary'}" id="cf-ok" type="button">${esc(confirmLabel)}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('#cf-cancel').onclick = close;
+  overlay.querySelector('#cf-ok').onclick = async () => {
+    overlay.querySelector('#cf-ok').disabled = true;
+    try { await onConfirm(); } finally { close(); }
+  };
+}
+
+// Dashboard card: your task counts by stage.
+async function loadMyTasksCard() {
+  const card = document.getElementById('tasks-card');
+  if (!card) return;
+  const body = card.querySelector('#tc-body');
+  const { data, error } = await supabase.from('tasks').select('status').eq('assignee_id', me.id);
+  if (error) { card.remove(); return; } // e.g. schema not applied yet
+  const list = data || [];
+  const count = (s) => list.filter((t) => t.status === s).length;
+  if (!list.length) {
+    body.innerHTML = `
+      <div class="empty" style="padding:6px 2px;">No tasks yet — add one and move it across the board.</div>
+      <button class="btn ghost full sm" id="tc-add" type="button" style="margin-top:8px;">+ New task</button>`;
+    body.querySelector('#tc-add').onclick = () => setView('tasks');
+    return;
+  }
+  const review = count('awaiting_review');
+  const active = count('inbound') + count('in_progress');
+  body.innerHTML = `
+    <div class="tk-mini">
+      ${TASK_STAGES.map((s) => `<div class="tk-chip stage-${s}"><span class="tk-chip-n">${count(s)}</span><span class="tk-chip-l">${TASK_LABEL[s]}</span></div>`).join('')}
+    </div>
+    <div class="muted-mini tk-mini-note">${review ? `${review} awaiting an admin sign-off` : active ? `${active} on your plate` : 'all caught up 🎉'}</div>`;
 }
 
 app.addEventListener('click', async (e) => {

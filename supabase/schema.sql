@@ -289,3 +289,68 @@ create policy goals_delete_own on public.goals for delete
   using (user_id = auth.uid());
 create policy goals_admin_all on public.goals for all
   using (public.is_admin()) with check (public.is_admin());
+
+-- ---------------------------------------------------------------------------
+-- Task board (Trello-style Kanban) — everyone
+-- ---------------------------------------------------------------------------
+-- Cards flow through four columns: inbound -> in_progress -> awaiting_review
+-- -> completed. The whole approved team can see the board. An employee moves
+-- their OWN cards through the first three columns; only an ADMIN may move a
+-- card into (or back out of) 'completed'. Once a card is completed, its
+-- assignee — or an admin — can delete it (or just leave it there).
+--
+-- assignee_name + assignee_avatar are denormalized (like office_days/goals) so
+-- everyone can see whose card it is without reading each other's profiles.
+create table if not exists public.tasks (
+  id              uuid primary key default gen_random_uuid(),
+  title           text not null,
+  description     text not null default '',
+  status          text not null default 'inbound'
+                    check (status in ('inbound', 'in_progress', 'awaiting_review', 'completed')),
+  assignee_id     uuid references public.profiles (id) on delete set null,
+  assignee_name   text not null default '',
+  assignee_avatar text,
+  created_by      uuid references public.profiles (id) on delete set null,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  completed_at    timestamptz,
+  completed_by    uuid references public.profiles (id) on delete set null
+);
+create index if not exists tasks_status_idx   on public.tasks (status);
+create index if not exists tasks_assignee_idx on public.tasks (assignee_id);
+create index if not exists tasks_updated_idx  on public.tasks (updated_at);
+
+alter table public.tasks enable row level security;
+
+-- Everyone approved can see the whole board.
+drop policy if exists tasks_select_approved on public.tasks;
+create policy tasks_select_approved on public.tasks for select
+  using (public.is_approved());
+
+-- Approved users create cards as themselves; only admins may assign to someone else.
+drop policy if exists tasks_insert on public.tasks;
+create policy tasks_insert on public.tasks for insert with check (
+  public.is_approved()
+  and created_by = auth.uid()
+  and (assignee_id = auth.uid() or public.is_admin())
+);
+
+-- The assignee can update their own card ONLY while it isn't completed, and may
+-- never set it to completed (USING freezes completed cards; WITH CHECK blocks the
+-- completed status). That's what makes "an admin has to move it to completed" real.
+drop policy if exists tasks_update_assignee on public.tasks;
+create policy tasks_update_assignee on public.tasks for update
+  using (assignee_id = auth.uid() and status <> 'completed')
+  with check (assignee_id = auth.uid() and status <> 'completed');
+
+-- Admins can update any card, including into/out of completed.
+drop policy if exists tasks_update_admin on public.tasks;
+create policy tasks_update_admin on public.tasks for update
+  using (public.is_admin()) with check (public.is_admin());
+
+-- Delete: the assignee may delete their card once it's completed; admins anytime.
+drop policy if exists tasks_delete on public.tasks;
+create policy tasks_delete on public.tasks for delete using (
+  public.is_admin()
+  or (assignee_id = auth.uid() and status = 'completed')
+);
