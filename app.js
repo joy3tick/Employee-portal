@@ -2281,8 +2281,8 @@ function taskCanMove(t, toStatus) {
 function taskCanDelete(t) {
   return me.role === 'admin' || (t.assignee_id === me.id && t.status === 'completed');
 }
-function taskCanEdit(t) {
-  return me.role === 'admin' || (t.assignee_id === me.id && t.status !== 'completed');
+function taskCanEdit() {
+  return me.role === 'admin'; // only admins edit task content; employees just move cards
 }
 // Most recently touched first, so a card you just moved pops to the top.
 function taskSort(a, b) {

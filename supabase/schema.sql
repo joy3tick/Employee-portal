@@ -289,7 +289,9 @@ create policy board_cards_insert on public.board_cards for insert with check (
 
 -- The assignee can update their own card ONLY while it isn't completed, and may
 -- never set it to completed (USING freezes completed cards; WITH CHECK blocks the
--- completed status). That's what makes "an admin has to move it to completed" real.
+-- completed status). A BEFORE UPDATE trigger (below) further freezes every column
+-- except status for non-admins, so an employee can MOVE a card but can't edit its
+-- title / details / due date / assignee — only an admin can.
 drop policy if exists board_cards_update_assignee on public.board_cards;
 create policy board_cards_update_assignee on public.board_cards for update
   using (assignee_id = auth.uid() and status <> 'completed')
@@ -306,3 +308,35 @@ create policy board_cards_delete on public.board_cards for delete using (
   public.is_admin()
   or (assignee_id = auth.uid() and status = 'completed')
 );
+
+-- Only admins edit a card's content. This BEFORE UPDATE trigger freezes every
+-- column except status for non-admins, so the assignee can move a card through
+-- the columns but can't change its title, details, due date, or assignee.
+-- (Mirrors protect_profile_columns above.)
+create or replace function public.protect_board_card_columns()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    new.title           := old.title;
+    new.description     := old.description;
+    new.due_date        := old.due_date;
+    new.assignee_id     := old.assignee_id;
+    new.assignee_name   := old.assignee_name;
+    new.assignee_avatar := old.assignee_avatar;
+    new.created_by      := old.created_by;
+    new.created_at      := old.created_at;
+    new.completed_at    := old.completed_at;
+    new.completed_by    := old.completed_by;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_board_card_columns on public.board_cards;
+create trigger protect_board_card_columns
+  before update on public.board_cards
+  for each row execute function public.protect_board_card_columns();
