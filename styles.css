@@ -183,7 +183,7 @@ h2 { font-size: 1.1rem; font-weight: 700; margin: 0 0 14px; }
 
 /* ---- Forms ---- */
 label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 6px; }
-input[type="text"], input[type="email"], input[type="password"] {
+input[type="text"], input[type="email"], input[type="password"], input[type="number"] {
   width: 100%; padding: 11px 12px; border-radius: 10px;
   border: 1px solid var(--border); background: #fff; color: var(--text);
   font-size: 0.95rem; font-family: inherit; outline: none; transition: border-color 0.15s, box-shadow 0.15s;
@@ -742,3 +742,75 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .myr-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .myr-week { font-weight: 600; font-size: 0.9rem; }
 .myr-note { margin: 0; font-size: 0.88rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ===========================================================================
+   Goals / OKRs
+   =========================================================================== */
+.goal-list { display: flex; flex-direction: column; }
+.goal-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 2px; border-bottom: 1px solid #f0f2f7;
+}
+.goal-row:first-child { padding-top: 2px; }
+.goal-row:last-child { border-bottom: 0; padding-bottom: 2px; }
+.goal-main { flex: 1; min-width: 0; }
+.goal-top { display: flex; align-items: center; gap: 9px; }
+.goal-ic { color: var(--accent); display: inline-flex; flex: 0 0 auto; }
+.goal-title {
+  font-weight: 600; font-size: 0.9rem; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.goal-metric {
+  margin-left: auto; flex: 0 0 auto; font-size: 0.78rem; font-weight: 700;
+  color: var(--muted); white-space: nowrap; padding-left: 8px;
+}
+.goal-metric.ok { color: var(--green); }
+.goal-bar { margin-top: 8px; }
+.goal-row.done .goal-title { color: var(--muted); }
+
+/* done / not-done checkbox (goals with no numeric target) */
+.goal-check {
+  flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border-radius: 6px;
+  border: 1.5px solid var(--border); background: #fff; color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.goal-check.on { background: var(--green); border-color: var(--green); }
+.goal-check.ro { cursor: default; }
+.goal-check .ic { width: 13px; height: 13px; }
+
+/* per-row controls */
+.goal-ctrls { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.goal-step {
+  width: 28px; height: 28px; padding: 0; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font-size: 1.1rem; font-weight: 700; line-height: 1; cursor: pointer; transition: all 0.12s;
+}
+.goal-step:hover { background: var(--surface-2); border-color: var(--accent); color: var(--accent); }
+.goal-edit {
+  width: 28px; height: 28px; padding: 0; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.12s;
+}
+.goal-edit:hover { background: var(--surface-2); color: var(--accent); }
+
+/* "Your goals" empty state */
+.goal-empty-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+
+/* team goals board: one card per person */
+#gl-team { display: flex; flex-direction: column; gap: 14px; }
+.goal-person-head { display: flex; align-items: center; gap: 11px; margin-bottom: 6px; }
+.goal-person-text { min-width: 0; }
+.goal-person-name { font-weight: 700; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* goal modal: target + unit side by side */
+.goal-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+#gm-progress-wrap { margin-top: 14px; }
+
+/* dashboard "your goals" card */
+.goals-card .gc-foot { margin-top: 10px; }
+.goals-card .goal-metric { font-size: 0.74rem; }
+
+@media (max-width: 420px) {
+  .goal-field-row { grid-template-columns: 1fr; }
+}

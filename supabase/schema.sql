@@ -236,3 +236,56 @@ create policy weekly_reviews_admin_all on public.weekly_reviews for all
 drop policy if exists weekly_reviews_select_own on public.weekly_reviews;
 create policy weekly_reviews_select_own on public.weekly_reviews for select
   using (user_id = auth.uid());
+
+-- ---------------------------------------------------------------------------
+-- Weekly goals / OKRs (everyone)
+-- ---------------------------------------------------------------------------
+-- Each approved person sets their own weekly targets tied to their role
+-- (growth metrics, partnership pipeline, content output, …). Goals are visible
+-- to EVERY approved user, so the team keeps each other accountable without
+-- anyone having to chase. A goal can be quantitative (target + progress, e.g.
+-- "5 / 5 articles") or a simple done / not-done checkbox (target left null).
+--
+-- Like office_days, display_name + avatar_url are denormalized onto each goal
+-- so the whole team can see whose goal it is without being able to read each
+-- other's profile rows.
+create table if not exists public.goals (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null references public.profiles (id) on delete cascade,
+  week_start    date not null,
+  title         text not null,
+  target        numeric,                              -- null => done/not-done goal
+  progress      numeric not null default 0,
+  unit          text not null default '',
+  done          boolean not null default false,       -- only used when target is null
+  display_name  text not null default '',
+  avatar_url    text,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+create index if not exists goals_user_idx on public.goals (user_id);
+create index if not exists goals_week_idx on public.goals (week_start);
+
+alter table public.goals enable row level security;
+
+-- Everyone approved can read the whole team's goals.
+drop policy if exists goals_select_approved on public.goals;
+create policy goals_select_approved on public.goals for select
+  using (public.is_approved());
+
+-- You can only create goals for yourself (and must be approved).
+drop policy if exists goals_insert_own on public.goals;
+create policy goals_insert_own on public.goals for insert
+  with check (user_id = auth.uid() and public.is_approved());
+
+-- You can edit + delete your own goals (the with-check stops you reassigning a
+-- goal to someone else); admins can manage everyone's.
+drop policy if exists goals_update_own on public.goals;
+drop policy if exists goals_delete_own on public.goals;
+drop policy if exists goals_admin_all  on public.goals;
+create policy goals_update_own on public.goals for update
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy goals_delete_own on public.goals for delete
+  using (user_id = auth.uid());
+create policy goals_admin_all on public.goals for all
+  using (public.is_admin()) with check (public.is_admin());

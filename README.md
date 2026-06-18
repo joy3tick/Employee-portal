@@ -8,6 +8,7 @@ A simple internal portal for Redline employees:
 - **Profile pictures** — everyone can upload their own photo; admins can set one for any employee.
 - **Per-employee insights (admin)** — open any user to see days this week/month/all-time, hours this month/all-time, and weekly averages, then add or edit the hours on any specific day.
 - **Weekly performance reviews** — admins rate each employee 1–10 with a note, once per week (any time during the week). A **Reviews** page shows every employee's status for a chosen week, and each employee's profile keeps their full review history. **Employees see their own reviews** (rating + note) on their dashboard as soon as you post them — but can't see anyone else's or edit their own.
+- **Goals / OKRs** — everyone sets their own weekly targets tied to their role (growth metrics, partnership pipeline, content output, …). Each goal is either a number to hit (target + progress, shown as a bar — e.g. *7,200 / 10,000 followers*) or a simple done/not-done checkbox. The **Goals** page shows your goals plus the whole team's, grouped by person, with a week switcher — so it's visible to everyone and creates accountability without anyone chasing. You bump your own progress straight from the page or your dashboard card; admins can edit anyone's. A one-tap **"Repeat last week's goals"** carries recurring targets forward.
 
 It's a **static web app** (plain HTML/CSS/JS, no build step) that talks directly to **Supabase** (Auth + Postgres). There's no server to run — it's hosted on **Vercel** and all security is enforced by Postgres Row Level Security.
 
@@ -30,7 +31,7 @@ Open the SQL editor, paste the contents of [`supabase/schema.sql`](supabase/sche
 
 This creates the tables, the auto-profile trigger (which makes **alexrogul@gmail.com** an admin automatically), the `avatars` storage bucket, and the security policies.
 
-> **Updating an existing project?** The schema is idempotent — whenever you pull new features (like profile pictures or admin insights), just paste and **Run** it again to add the new columns, the `avatars` bucket, and the new policies.
+> **Updating an existing project?** The schema is idempotent — whenever you pull new features (like profile pictures, weekly reviews, or goals), just paste and **Run** it again to add the new tables/columns, the `avatars` bucket, and the new policies.
 
 ### 2. Turn off email confirmation (recommended)
 So signup is instant (admin approval is the real gate anyway):
@@ -68,7 +69,7 @@ update public.profiles set role = 'admin', status = 'approved' where email = 'so
 ├── index.html          # app shell
 ├── config.js           # public Supabase URL + anon key
 ├── styles.css          # Redline theme
-├── app.js              # the whole app: auth, approval, calendar, admin
+├── app.js              # the whole app: auth, approval, calendar, reviews, goals, admin
 ├── assets/logo.png     # Redline logo — favicon + in-app branding
 ├── vercel.json         # tells Vercel to serve the folder as a static site
 ├── supabase/schema.sql # run this once in the Supabase SQL editor
