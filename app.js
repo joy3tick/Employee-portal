@@ -323,7 +323,7 @@ async function uploadAvatar(uid, file) {
   if (pErr) throw pErr;
   await supabase.from('office_days').update({ avatar_url: url }).eq('user_id', uid);
   await supabase.from('goals').update({ avatar_url: url }).eq('user_id', uid);
-  await supabase.from('tasks').update({ assignee_avatar: url }).eq('assignee_id', uid);
+  await supabase.from('board_cards').update({ assignee_avatar: url }).eq('assignee_id', uid);
   return url;
 }
 
@@ -333,7 +333,7 @@ async function removeAvatar(uid) {
   if (error) throw error;
   await supabase.from('office_days').update({ avatar_url: null }).eq('user_id', uid);
   await supabase.from('goals').update({ avatar_url: null }).eq('user_id', uid);
-  await supabase.from('tasks').update({ assignee_avatar: null }).eq('assignee_id', uid);
+  await supabase.from('board_cards').update({ assignee_avatar: null }).eq('assignee_id', uid);
   if (uid === me.id) me.avatar_url = null;
 }
 
@@ -496,7 +496,7 @@ function openProfileModal() {
       if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
       await supabase.from('office_days').update({ display_name: name }).eq('user_id', me.id);
       await supabase.from('goals').update({ display_name: name }).eq('user_id', me.id);
-      await supabase.from('tasks').update({ assignee_name: name }).eq('assignee_id', me.id);
+      await supabase.from('board_cards').update({ assignee_name: name }).eq('assignee_id', me.id);
       me.full_name = name;
       dirty = true;
     }
@@ -2707,7 +2707,7 @@ function viewTasks(view) {
 
 async function loadTasks() {
   const { data, error } = await supabase
-    .from('tasks')
+    .from('board_cards')
     .select('id, title, description, status, assignee_id, assignee_name, assignee_avatar, created_by, created_at, updated_at, completed_at')
     .order('updated_at', { ascending: false });
   const board = document.getElementById('kanban');
@@ -2858,7 +2858,7 @@ async function moveTask(t, toStatus) {
   else { patch.completed_at = null; patch.completed_by = null; }
   Object.assign(t, { status: toStatus, updated_at: nowISO, completed_at: patch.completed_at });
   renderBoard();
-  const { error } = await supabase.from('tasks').update(patch).eq('id', t.id);
+  const { error } = await supabase.from('board_cards').update(patch).eq('id', t.id);
   if (error) { Object.assign(t, prev); renderBoard(); toast(error.message); return; }
   if (toStatus === 'completed') toast('🎉 Task completed!');
 }
@@ -2874,7 +2874,7 @@ function confirmDeleteTask(t) {
       const snapshot = tasks.rows;
       tasks.rows = tasks.rows.filter((x) => x.id !== t.id);
       renderBoard();
-      const { error } = await supabase.from('tasks').delete().eq('id', t.id);
+      const { error } = await supabase.from('board_cards').delete().eq('id', t.id);
       if (error) { tasks.rows = snapshot; renderBoard(); toast(error.message); return; }
       toast('Task deleted');
     },
@@ -2941,7 +2941,7 @@ async function openTaskModal(existing) {
     saveBtn.disabled = true;
     let error;
     if (creating) {
-      ({ error } = await supabase.from('tasks').insert({
+      ({ error } = await supabase.from('board_cards').insert({
         title, description, status: 'inbound',
         assignee_id: assignee.id,
         assignee_name: assignee.full_name || assignee.email || '',
@@ -2955,7 +2955,7 @@ async function openTaskModal(existing) {
         patch.assignee_name = assignee.full_name || assignee.email || '';
         patch.assignee_avatar = assignee.avatar_url || null;
       }
-      ({ error } = await supabase.from('tasks').update(patch).eq('id', existing.id));
+      ({ error } = await supabase.from('board_cards').update(patch).eq('id', existing.id));
     }
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
     close(); toast(creating ? 'Task added' : 'Task saved'); loadTasks();
@@ -2990,7 +2990,7 @@ async function loadMyTasksCard() {
   const card = document.getElementById('tasks-card');
   if (!card) return;
   const body = card.querySelector('#tc-body');
-  const { data, error } = await supabase.from('tasks').select('status').eq('assignee_id', me.id);
+  const { data, error } = await supabase.from('board_cards').select('status').eq('assignee_id', me.id);
   if (error) { card.remove(); return; } // e.g. schema not applied yet
   const list = data || [];
   const count = (s) => list.filter((t) => t.status === s).length;

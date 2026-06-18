@@ -293,6 +293,9 @@ create policy goals_admin_all on public.goals for all
 -- ---------------------------------------------------------------------------
 -- Task board (Trello-style Kanban) — everyone
 -- ---------------------------------------------------------------------------
+-- Stored in its OWN table (board_cards) so it never collides with any other
+-- "tasks" feature/table — this board is fully self-contained.
+--
 -- Cards flow through four columns: inbound -> in_progress -> awaiting_review
 -- -> completed. The whole approved team can see the board. An employee moves
 -- their OWN cards through the first three columns; only an ADMIN may move a
@@ -301,7 +304,7 @@ create policy goals_admin_all on public.goals for all
 --
 -- assignee_name + assignee_avatar are denormalized (like office_days/goals) so
 -- everyone can see whose card it is without reading each other's profiles.
-create table if not exists public.tasks (
+create table if not exists public.board_cards (
   id              uuid primary key default gen_random_uuid(),
   title           text not null,
   description     text not null default '',
@@ -316,20 +319,20 @@ create table if not exists public.tasks (
   completed_at    timestamptz,
   completed_by    uuid references public.profiles (id) on delete set null
 );
-create index if not exists tasks_status_idx   on public.tasks (status);
-create index if not exists tasks_assignee_idx on public.tasks (assignee_id);
-create index if not exists tasks_updated_idx  on public.tasks (updated_at);
+create index if not exists board_cards_status_idx   on public.board_cards (status);
+create index if not exists board_cards_assignee_idx on public.board_cards (assignee_id);
+create index if not exists board_cards_updated_idx  on public.board_cards (updated_at);
 
-alter table public.tasks enable row level security;
+alter table public.board_cards enable row level security;
 
 -- Everyone approved can see the whole board.
-drop policy if exists tasks_select_approved on public.tasks;
-create policy tasks_select_approved on public.tasks for select
+drop policy if exists board_cards_select_approved on public.board_cards;
+create policy board_cards_select_approved on public.board_cards for select
   using (public.is_approved());
 
 -- Approved users create cards as themselves; only admins may assign to someone else.
-drop policy if exists tasks_insert on public.tasks;
-create policy tasks_insert on public.tasks for insert with check (
+drop policy if exists board_cards_insert on public.board_cards;
+create policy board_cards_insert on public.board_cards for insert with check (
   public.is_approved()
   and created_by = auth.uid()
   and (assignee_id = auth.uid() or public.is_admin())
@@ -338,19 +341,19 @@ create policy tasks_insert on public.tasks for insert with check (
 -- The assignee can update their own card ONLY while it isn't completed, and may
 -- never set it to completed (USING freezes completed cards; WITH CHECK blocks the
 -- completed status). That's what makes "an admin has to move it to completed" real.
-drop policy if exists tasks_update_assignee on public.tasks;
-create policy tasks_update_assignee on public.tasks for update
+drop policy if exists board_cards_update_assignee on public.board_cards;
+create policy board_cards_update_assignee on public.board_cards for update
   using (assignee_id = auth.uid() and status <> 'completed')
   with check (assignee_id = auth.uid() and status <> 'completed');
 
 -- Admins can update any card, including into/out of completed.
-drop policy if exists tasks_update_admin on public.tasks;
-create policy tasks_update_admin on public.tasks for update
+drop policy if exists board_cards_update_admin on public.board_cards;
+create policy board_cards_update_admin on public.board_cards for update
   using (public.is_admin()) with check (public.is_admin());
 
 -- Delete: the assignee may delete their card once it's completed; admins anytime.
-drop policy if exists tasks_delete on public.tasks;
-create policy tasks_delete on public.tasks for delete using (
+drop policy if exists board_cards_delete on public.board_cards;
+create policy board_cards_delete on public.board_cards for delete using (
   public.is_admin()
   or (assignee_id = auth.uid() and status = 'completed')
 );
