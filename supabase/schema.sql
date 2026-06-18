@@ -236,3 +236,69 @@ create policy weekly_reviews_admin_all on public.weekly_reviews for all
 drop policy if exists weekly_reviews_select_own on public.weekly_reviews;
 create policy weekly_reviews_select_own on public.weekly_reviews for select
   using (user_id = auth.uid());
+
+-- ---------------------------------------------------------------------------
+-- Tasks — admins assign work to employees; employees see & progress their own
+-- ---------------------------------------------------------------------------
+-- assignee_name / assigned_by_name / assignee_avatar are denormalized so an
+-- employee (who can't read other people's profile rows) can still see who
+-- assigned the task, and admins can list assignees without extra joins.
+create table if not exists public.tasks (
+  id               uuid primary key default gen_random_uuid(),
+  title            text not null,
+  description      text not null default '',
+  assignee_id      uuid not null references public.profiles (id) on delete cascade,
+  assignee_name    text not null default '',
+  assignee_avatar  text,
+  assigned_by      uuid references public.profiles (id) on delete set null,
+  assigned_by_name text not null default '',
+  status           text not null default 'todo'   check (status in ('todo', 'in_progress', 'done')),
+  priority         text not null default 'normal' check (priority in ('low', 'normal', 'high')),
+  due_date         date,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+create index if not exists tasks_assignee_idx on public.tasks (assignee_id);
+create index if not exists tasks_status_idx   on public.tasks (status);
+
+alter table public.tasks enable row level security;
+
+-- Admins can do everything; employees can read their own tasks and update only
+-- the status (a trigger freezes every other column for non-admins).
+drop policy if exists tasks_admin_all  on public.tasks;
+drop policy if exists tasks_select_own on public.tasks;
+drop policy if exists tasks_update_own on public.tasks;
+create policy tasks_admin_all on public.tasks for all
+  using (public.is_admin()) with check (public.is_admin());
+create policy tasks_select_own on public.tasks for select
+  using (assignee_id = auth.uid());
+create policy tasks_update_own on public.tasks for update
+  using (assignee_id = auth.uid()) with check (assignee_id = auth.uid());
+
+create or replace function public.protect_task_columns()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    new.title            := old.title;
+    new.description      := old.description;
+    new.assignee_id      := old.assignee_id;
+    new.assignee_name    := old.assignee_name;
+    new.assignee_avatar  := old.assignee_avatar;
+    new.assigned_by      := old.assigned_by;
+    new.assigned_by_name := old.assigned_by_name;
+    new.priority         := old.priority;
+    new.due_date         := old.due_date;
+  end if;
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_task_columns on public.tasks;
+create trigger protect_task_columns
+  before update on public.tasks
+  for each row execute function public.protect_task_columns();
