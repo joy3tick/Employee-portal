@@ -191,6 +191,7 @@ function icon(name, cls = 'ic') {
     'arrow-left': '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
     'arrow-right': '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
     trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    chevron: '<polyline points="6 9 12 15 18 9"/>',
   };
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -239,6 +240,7 @@ const tasks = { rows: [], filter: 'all' };
 const TASK_STAGES = ['inbound', 'in_progress', 'awaiting_review', 'completed'];
 const TASK_LABEL = { inbound: 'Inbound', in_progress: 'In progress', awaiting_review: 'Awaiting review', completed: 'Completed' };
 let taskDragId = null; // id of the card being dragged (desktop drag-and-drop)
+const expandedTasks = new Set(); // ids of cards expanded inline on the board
 
 async function fetchProfile(userId) {
   for (let i = 0; i < 4; i++) {
@@ -2323,7 +2325,7 @@ function viewTasks(view) {
 async function loadTasks() {
   const { data, error } = await supabase
     .from('board_cards')
-    .select('id, title, description, status, assignee_id, assignee_name, assignee_avatar, created_by, created_at, updated_at, completed_at')
+    .select('id, title, description, status, due_date, assignee_id, assignee_name, assignee_avatar, created_by, created_at, updated_at, completed_at')
     .order('updated_at', { ascending: false });
   const board = document.getElementById('kanban');
   if (error) {
@@ -2373,14 +2375,32 @@ function renderTaskStats(rows) {
   ).join('');
 }
 
+// Compact due-date pill (overdue in red, due-today in amber).
+function fmtDueShort(iso) {
+  const d = new Date(`${iso}T00:00:00`);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(undefined, sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function taskDueHTML(t) {
+  if (!t.due_date) return '';
+  const done = t.status === 'completed';
+  const overdue = !done && t.due_date < TODAY;
+  const today = !done && t.due_date === TODAY;
+  const cls = overdue ? ' overdue' : today ? ' soon' : '';
+  const text = today ? 'Due today' : `${overdue ? 'Overdue' : 'Due'} ${fmtDueShort(t.due_date)}`;
+  return `<div class="kc-due${cls}">${icon('cal', 'ic sm')}<span>${esc(text)}</span></div>`;
+}
+
 function taskCardHTML(t) {
   const meFlag = t.assignee_id === me.id;
   const canDrag = me.role === 'admin' || (meFlag && t.status !== 'completed');
+  const expanded = expandedTasks.has(t.id);
   return `
-    <div class="kanban-card status-${t.status}" data-task="${esc(t.id)}" draggable="${canDrag ? 'true' : 'false'}">
+    <div class="kanban-card status-${t.status}${expanded ? ' expanded' : ''}" data-task="${esc(t.id)}" draggable="${canDrag ? 'true' : 'false'}">
       <div class="kc-main">
         <div class="kc-title">${esc(t.title)}</div>
         ${t.description ? `<div class="kc-desc">${esc(t.description)}</div>` : ''}
+        ${taskDueHTML(t)}
       </div>
       <div class="kc-foot">
         <div class="kc-assignee" title="${esc(t.assignee_name || 'Unassigned')}">
@@ -2397,6 +2417,10 @@ function taskCardControlsHTML(t) {
   const prev = TASK_STAGES[i - 1];
   const next = TASK_STAGES[i + 1];
   const parts = [];
+  if (t.description) {
+    const exp = expandedTasks.has(t.id);
+    parts.push(`<button class="kc-btn kc-expand" data-expand type="button" title="${exp ? 'Collapse' : 'Expand'}" aria-label="${exp ? 'Collapse task' : 'Expand task'}">${icon('chevron', 'ic sm')}</button>`);
+  }
   if (prev && taskCanMove(t, prev)) {
     parts.push(`<button class="kc-btn" data-move="${prev}" type="button" title="Back to ${TASK_LABEL[prev]}">${icon('arrow-left', 'ic sm')}</button>`);
   }
@@ -2426,6 +2450,13 @@ function wireBoard(board) {
     const del = el.querySelector('[data-del]');
     if (del) del.onclick = (e) => { e.stopPropagation(); confirmDeleteTask(t); };
     el.querySelector('.kc-main').onclick = () => openTaskModal(t);
+    const exp = el.querySelector('[data-expand]');
+    if (exp) exp.onclick = (e) => {
+      e.stopPropagation();
+      const open = el.classList.toggle('expanded');
+      if (open) expandedTasks.add(t.id); else expandedTasks.delete(t.id);
+      exp.title = open ? 'Collapse' : 'Expand';
+    };
 
     // Native drag-and-drop (desktop pointer). Touch devices use the arrow buttons.
     if (el.getAttribute('draggable') === 'true') {
@@ -2528,6 +2559,10 @@ async function openTaskModal(existing) {
         <select id="tk-assignee" class="form-select">
           ${users.map((u) => `<option value="${esc(u.id)}"${u.id === curAssigneeId ? ' selected' : ''}>${esc(u.full_name || u.email)}${u.id === me.id ? ' (you)' : ''}</option>`).join('')}
         </select>` : ''}
+      ${editable
+        ? `<label style="margin-top:14px;">Due date <span style="opacity:.7">(optional)</span></label>
+           <input id="tk-due" type="date" value="${existing && existing.due_date ? esc(existing.due_date) : ''}" />`
+        : (existing.due_date ? `<label style="margin-top:14px;">Due date</label><div class="tk-readonly">${esc(fmtDate(existing.due_date))}</div>` : '')}
       ${existing && existing.status === 'completed' && existing.completed_at ? `<p class="muted-mini" style="margin:14px 0 0;">✓ Completed ${esc(fmtDate(existing.completed_at.slice(0, 10)))}.</p>` : ''}
       <div id="tk-msg" class="msg"></div>
       <div class="modal-foot">
@@ -2552,6 +2587,8 @@ async function openTaskModal(existing) {
     const title = titleEl.value.trim();
     if (!title) { msg.textContent = 'Give the task a title.'; msg.className = 'msg show error'; return; }
     const description = overlay.querySelector('#tk-desc').value.trim();
+    const dueEl = overlay.querySelector('#tk-due');
+    const due_date = dueEl && dueEl.value ? dueEl.value : null;
     const sel = overlay.querySelector('#tk-assignee');
     let assignee = (sel && users) ? users.find((u) => u.id === sel.value) : null;
     if (creating && !assignee) assignee = { id: me.id, full_name: me.full_name, email: me.email, avatar_url: me.avatar_url };
@@ -2559,14 +2596,14 @@ async function openTaskModal(existing) {
     let error;
     if (creating) {
       ({ error } = await supabase.from('board_cards').insert({
-        title, description, status: 'inbound',
+        title, description, status: 'inbound', due_date,
         assignee_id: assignee.id,
         assignee_name: assignee.full_name || assignee.email || '',
         assignee_avatar: assignee.avatar_url || null,
         created_by: me.id,
       }));
     } else {
-      const patch = { title, description, updated_at: new Date().toISOString() };
+      const patch = { title, description, due_date, updated_at: new Date().toISOString() };
       if (assignee) {
         patch.assignee_id = assignee.id;
         patch.assignee_name = assignee.full_name || assignee.email || '';

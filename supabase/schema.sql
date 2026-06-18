@@ -257,6 +257,7 @@ create table if not exists public.board_cards (
   description     text not null default '',
   status          text not null default 'inbound'
                     check (status in ('inbound', 'in_progress', 'awaiting_review', 'completed')),
+  due_date        date,
   assignee_id     uuid references public.profiles (id) on delete set null,
   assignee_name   text not null default '',
   assignee_avatar text,
@@ -266,6 +267,8 @@ create table if not exists public.board_cards (
   completed_at    timestamptz,
   completed_by    uuid references public.profiles (id) on delete set null
 );
+-- In case the table predates due dates:
+alter table public.board_cards add column if not exists due_date date;
 create index if not exists board_cards_status_idx   on public.board_cards (status);
 create index if not exists board_cards_assignee_idx on public.board_cards (assignee_id);
 create index if not exists board_cards_updated_idx  on public.board_cards (updated_at);

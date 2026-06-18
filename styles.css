@@ -858,6 +858,18 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .tk-chip.stage-completed { background: var(--green-soft); color: var(--green); }
 .tk-mini-note { margin-top: 10px; }
 
+/* due-date pill on cards */
+.kc-due { display: inline-flex; align-items: center; gap: 5px; margin-top: 9px; font-size: 0.74rem; font-weight: 700; color: var(--muted); }
+.kc-due .ic { width: 14px; height: 14px; flex: 0 0 auto; }
+.kc-due.soon { color: var(--amber); }
+.kc-due.overdue { color: var(--accent); }
+
+/* expand / collapse a card to read the full task */
+.kc-expand svg { transition: transform 0.15s; }
+.kanban-card.expanded .kc-expand svg { transform: rotate(180deg); }
+.kanban-card.expanded .kc-desc { -webkit-line-clamp: unset; overflow: visible; }
+.kc-actions { flex-wrap: wrap; justify-content: flex-end; row-gap: 5px; }
+
 @media (max-width: 640px) {
   .th-actions { width: 100%; }
   .th-actions .btn { flex: 1; }
