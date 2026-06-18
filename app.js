@@ -1045,12 +1045,14 @@ function entrySort(a, b) {
 
 function viewSchedule(view) {
   panelEditing = false;
+  const isAdmin = me.role === 'admin';
   view.innerHTML = `
     <div class="page-head">
       <div>
         <h1>Office schedule</h1>
         <p class="subtitle" style="margin:2px 0 0;">Tap a day to mark yourself in, on vacation, or off sick — or drag across days (press &amp; hold first on a phone) to book several at once.</p>
       </div>
+      ${isAdmin ? `<button class="btn ghost" id="sched-backfill" type="button">${icon('plus', 'ic sm')}<span>Log past day</span></button>` : ''}
     </div>
     <div id="stats" class="stats"></div>
     <div class="cal-toolbar">
@@ -1075,6 +1077,14 @@ function viewSchedule(view) {
     sched.view = { year: n.getFullYear(), month: n.getMonth() };
     sched.pendingSelect = TODAY;
     loadSchedule();
+  };
+  const backfillBtn = document.getElementById('sched-backfill');
+  if (backfillBtn) backfillBtn.onclick = async () => {
+    backfillBtn.disabled = true;
+    const users = await fetchApprovedUsers();
+    backfillBtn.disabled = false;
+    if (!users) return;
+    openAdminEntryModal(me, null, { users, defaultDay: addDaysISO(TODAY, -1), onSaved: jumpScheduleTo });
   };
   document.getElementById('grid').addEventListener('pointerdown', onGridPointerDown);
   if (!pointerWired) {
@@ -1386,7 +1396,9 @@ function renderPanel() {
 
   let actionHTML;
   if (isPast) {
-    actionHTML = '<button class="btn ghost full" type="button" disabled>This day has passed</button>';
+    actionHTML = me.role === 'admin'
+      ? `<button class="btn ghost full" type="button" id="backfill-day">${icon('plus', 'ic sm')}<span>Log this day (admin)</span></button>`
+      : '<button class="btn ghost full" type="button" disabled>This day has passed</button>';
   } else if (!mine || panelEditing) {
     const curKind = (panelEditing && myRow) ? kindOf(myRow) : 'in';
     const ds = myRow && myRow.start_time ? hhmm(myRow.start_time) : '09:00';
@@ -1479,6 +1491,14 @@ function renderPanel() {
   if (editBtn) editBtn.onclick = () => { panelEditing = true; renderPanel(); };
   const rmBtn = panel.querySelector('#remove-me');
   if (rmBtn) rmBtn.onclick = () => removeMe(iso);
+  const backfill = panel.querySelector('#backfill-day');
+  if (backfill) backfill.onclick = async () => {
+    backfill.disabled = true;
+    const users = await fetchApprovedUsers();
+    backfill.disabled = false;
+    if (!users) return;
+    openAdminEntryModal(me, null, { users, defaultDay: iso, onSaved: jumpScheduleTo });
+  };
 }
 
 // Bulk scheduler shown when more than one day is selected via drag.
@@ -1948,10 +1968,36 @@ function renderTeamDetail(view, p, days, revs) {
   });
 }
 
-// Admin: add or edit a specific user's office day (date + kind + hours).
-function openAdminEntryModal(profile, row) {
+// All approved people, for the admin backfill person-picker (admins only).
+async function fetchApprovedUsers() {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, full_name, email, avatar_url')
+    .eq('status', 'approved')
+    .order('full_name', { ascending: true });
+  if (error) { toast(error.message); return null; }
+  return data || [];
+}
+
+// Point the schedule calendar at a specific day (used after an admin backfill).
+function jumpScheduleTo(day) {
+  if (day) {
+    const [y, m] = day.split('-').map(Number);
+    sched.view = { year: y, month: m - 1 };
+    sched.pendingSelect = day;
+  }
+  loadSchedule();
+}
+
+// Admin: add or edit an office day (date + kind + hours). With opts.users it
+// shows a person picker so an admin can backfill for themselves or anyone;
+// the date field accepts past dates. Without opts it edits the fixed `profile`.
+function openAdminEntryModal(profile, row, opts = {}) {
+  const users = opts.users || null;            // when set, show a person picker
+  const onSaved = opts.onSaved || refreshTeam; // callback(savedDay) after save/remove
   const editing = !!(row && row.kind);
-  const dayVal = row && row.day ? row.day : TODAY;
+  const dayVal = row && row.day ? row.day : (opts.defaultDay || TODAY);
+  const defaultUserId = (profile && profile.id) || me.id;
   const kind = editing ? kindOf(row) : 'in';
   const s = row && row.start_time ? hhmm(row.start_time) : '09:00';
   const e = row && row.end_time ? hhmm(row.end_time) : '17:00';
@@ -1961,9 +2007,17 @@ function openAdminEntryModal(profile, row) {
   overlay.innerHTML = `
     <div class="modal card pad">
       <h2 style="margin-bottom:4px;">${editing ? 'Edit day' : 'Add a day'}</h2>
-      <p class="subtitle" style="margin-bottom:16px;">For ${esc(profile.full_name || profile.email)}.</p>
+      <p class="subtitle" style="margin-bottom:16px;">${users && !editing
+        ? 'Backfill an office day — past dates are allowed.'
+        : `For ${esc(profile.full_name || profile.email)}.`}</p>
+      ${users && !editing ? `
+        <label>Person</label>
+        <select id="ae-user" class="form-select" style="margin-bottom:14px;">
+          ${users.map((u) => `<option value="${esc(u.id)}"${u.id === defaultUserId ? ' selected' : ''}>${esc(u.full_name || u.email)}${u.id === me.id ? ' (you)' : ''}</option>`).join('')}
+        </select>` : ''}
       <label>Date</label>
       <input type="date" id="ae-date" value="${dayVal}"${editing ? ' disabled' : ''} />
+      ${users && !editing ? '<p class="muted-mini" style="margin:6px 0 0;">Pick any date, including days that have already passed.</p>' : ''}
       <div class="kind-select" style="margin-top:14px;">
         <button type="button" class="kind-opt${kind === 'in' ? ' active' : ''}" data-kind="in">🏢 In</button>
         <button type="button" class="kind-opt${kind === 'vacation' ? ' active' : ''}" data-kind="vacation">🌴 Vacation</button>
@@ -2013,7 +2067,7 @@ function openAdminEntryModal(profile, row) {
     rm.disabled = true;
     const { error } = await supabase.from('office_days').delete().eq('user_id', profile.id).eq('day', dayVal);
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; rm.disabled = false; return; }
-    close(); toast('Day removed'); refreshTeam();
+    close(); toast('Day removed'); onSaved(dayVal);
   };
 
   overlay.querySelector('#ae-save').onclick = async () => {
@@ -2027,17 +2081,20 @@ function openAdminEntryModal(profile, row) {
       if (!st || !en) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
       if (st === en) { msg.textContent = "Start and end times can't be the same."; msg.className = 'msg show error'; return; }
     }
+    let target = profile || me;
+    const sel = overlay.querySelector('#ae-user');
+    if (sel) target = (users || []).find((u) => u.id === sel.value) || target;
     const payload = {
-      user_id: profile.id, day,
-      display_name: profile.full_name || profile.email,
-      avatar_url: profile.avatar_url || null,
+      user_id: target.id, day,
+      display_name: target.full_name || target.email,
+      avatar_url: target.avatar_url || null,
       kind: k, start_time: st, end_time: en,
     };
     const saveBtn = overlay.querySelector('#ae-save');
     saveBtn.disabled = true;
     const { error } = await supabase.from('office_days').upsert(payload, { onConflict: 'user_id,day' });
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-    close(); toast('Saved'); refreshTeam();
+    close(); toast('Saved'); onSaved(day);
   };
 }
 

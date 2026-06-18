@@ -4,7 +4,8 @@ A simple internal portal for Redline employees:
 
 - **Self-service signup** — employees create an account in seconds.
 - **Admin approval** — new accounts sit in *pending* until an admin approves or denies them.
-- **Office-day scheduling** — approved employees mark which days they're in on a shared calendar and see who else is in. Drag across days (press-and-hold first on a phone) to book several at once.
+- **Office-day scheduling** — approved employees mark which days they're in on a shared calendar and see who else is in. Drag across days (press-and-hold first on a phone) to book several at once. Regular employees can only edit today and future days.
+- **Admin backfill of past days** — admins can log office days **that have already passed** (with hours), for **themselves or anyone**. From the Schedule, hit **Log past day** (or click a past day → **Log this day**) and pick the person, date, and hours; you can also add/edit any specific day from a user's profile. Everyone else stays locked out of the past — this is admin-only.
 - **Profile pictures** — everyone can upload their own photo; admins can set one for any employee.
 - **Per-employee insights (admin)** — open any user to see days this week/month/all-time, hours this month/all-time, and weekly averages, then add or edit the hours on any specific day.
 - **Weekly performance reviews** — admins rate each employee 1–10 with a note, once per week (any time during the week). A **Reviews** page shows every employee's status for a chosen week, and each employee's profile keeps their full review history. **Employees see their own reviews** (rating + note) on their dashboard as soon as you post them — but can't see anyone else's or edit their own.

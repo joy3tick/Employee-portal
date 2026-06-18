@@ -190,6 +190,14 @@ input[type="text"], input[type="email"], input[type="password"], input[type="num
 }
 input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
+select.form-select {
+  width: 100%; padding: 11px 12px; border-radius: 10px;
+  border: 1px solid var(--border); background: #fff; color: var(--text);
+  font-size: 0.95rem; font-family: inherit; outline: none; cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+select.form-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   padding: 11px 16px; border-radius: 10px; border: 1px solid var(--border);
