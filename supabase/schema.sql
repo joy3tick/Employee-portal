@@ -330,12 +330,11 @@ drop policy if exists board_cards_select_approved on public.board_cards;
 create policy board_cards_select_approved on public.board_cards for select
   using (public.is_approved());
 
--- Approved users create cards as themselves; only admins may assign to someone else.
+-- Only ADMINS create/assign cards — employees can't add their own. (The admin
+-- records themselves as created_by and picks any assignee.)
 drop policy if exists board_cards_insert on public.board_cards;
 create policy board_cards_insert on public.board_cards for insert with check (
-  public.is_approved()
-  and created_by = auth.uid()
-  and (assignee_id = auth.uid() or public.is_admin())
+  public.is_admin() and created_by = auth.uid()
 );
 
 -- The assignee can update their own card ONLY while it isn't completed, and may

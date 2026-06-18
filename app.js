@@ -2681,14 +2681,16 @@ function viewTasks(view) {
     <div class="page-head">
       <div>
         <h1>Task board</h1>
-        <p class="subtitle" style="margin:2px 0 0;">Move work from Inbound → In progress → Awaiting review. ${isAdmin ? 'You sign off the final ✓ Completed.' : 'An admin signs off the final ✓ Completed.'}</p>
+        <p class="subtitle" style="margin:2px 0 0;">${isAdmin
+          ? 'Assign tasks to the team, then sign off the final ✓ Completed.'
+          : 'Work the tasks assigned to you through Inbound → In progress → Awaiting review. An admin signs off the final ✓ Completed.'}</p>
       </div>
       <div class="th-actions">
         <div class="seg" id="task-filter">
           <button data-filter="all" class="${tasks.filter === 'all' ? 'active' : ''}" type="button">Everyone</button>
           <button data-filter="mine" class="${tasks.filter === 'mine' ? 'active' : ''}" type="button">Just me</button>
         </div>
-        <button class="btn primary" id="task-add" type="button">${icon('plus', 'ic sm')}<span>New task</span></button>
+        ${isAdmin ? `<button class="btn primary" id="task-add" type="button">${icon('plus', 'ic sm')}<span>Assign task</span></button>` : ''}
       </div>
     </div>
     <div id="task-stats" class="stats"></div>
@@ -2701,7 +2703,8 @@ function viewTasks(view) {
       renderBoard();
     };
   });
-  view.querySelector('#task-add').onclick = () => openTaskModal(null);
+  const addBtn = view.querySelector('#task-add');
+  if (addBtn) addBtn.onclick = () => openTaskModal(null);
   loadTasks();
 }
 
@@ -2725,11 +2728,12 @@ function renderBoard() {
   const rows = tasks.filter === 'mine' ? tasks.rows.filter((t) => t.assignee_id === me.id) : tasks.rows;
   renderTaskStats(rows);
   const hint = {
-    inbound: tasks.filter === 'mine' ? 'Add a task to get the ball rolling.' : 'Nothing new here.',
+    inbound: me.role === 'admin' ? 'Assign a task to get the ball rolling.' : 'Nothing assigned yet.',
     in_progress: 'Nothing in progress.',
     awaiting_review: 'Nothing waiting on review.',
     completed: 'No completed tasks yet.',
   };
+  const isAdmin = me.role === 'admin';
   board.innerHTML = TASK_STAGES.map((s) => {
     const list = rows.filter((t) => t.status === s).sort(taskSort);
     return `
@@ -2738,7 +2742,7 @@ function renderBoard() {
           <span class="kdot"></span>
           <span class="kcol-title">${TASK_LABEL[s]}</span>
           <span class="kcol-count">${list.length}</span>
-          ${s === 'inbound' ? `<button class="kcol-add" id="kcol-add" type="button" title="Add task">${icon('plus', 'ic sm')}</button>` : ''}
+          ${s === 'inbound' && isAdmin ? `<button class="kcol-add" id="kcol-add" type="button" title="Assign a task">${icon('plus', 'ic sm')}</button>` : ''}
         </div>
         <div class="kcol-body">
           ${list.length ? list.map(taskCardHTML).join('') : `<div class="kcol-empty">${hint[s]}</div>`}
@@ -2885,6 +2889,7 @@ function confirmDeleteTask(t) {
 // read-only for cards you don't own (transparency without edit rights).
 async function openTaskModal(existing) {
   const creating = !existing;
+  if (creating && me.role !== 'admin') { toast('Only an admin can assign tasks.'); return; }
   const editable = creating || taskCanEdit(existing);
   const isAdmin = me.role === 'admin';
   const users = isAdmin && editable ? await fetchApprovedUsers() : null;
@@ -2895,7 +2900,7 @@ async function openTaskModal(existing) {
   overlay.innerHTML = `
     <div class="modal card pad">
       <div class="tk-head">
-        <h2 style="margin:0;">${creating ? 'New task' : editable ? 'Edit task' : 'Task'}</h2>
+        <h2 style="margin:0;">${creating ? 'Assign a task' : editable ? 'Edit task' : 'Task'}</h2>
         ${existing ? `<span class="badge stage-${existing.status}">${TASK_LABEL[existing.status]}</span>` : ''}
       </div>
       <label style="margin-top:14px;">Title</label>
@@ -2916,7 +2921,7 @@ async function openTaskModal(existing) {
       <div class="modal-foot">
         ${existing && taskCanDelete(existing) ? '<button class="btn danger" id="tk-del" type="button" style="margin-right:auto;">Delete</button>' : ''}
         <button class="btn ghost" id="tk-cancel" type="button">${editable ? 'Cancel' : 'Close'}</button>
-        ${editable ? `<button class="btn primary" id="tk-save" type="button">${creating ? 'Add task' : 'Save'}</button>` : ''}
+        ${editable ? `<button class="btn primary" id="tk-save" type="button">${creating ? 'Assign task' : 'Save'}</button>` : ''}
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -2958,7 +2963,7 @@ async function openTaskModal(existing) {
       ({ error } = await supabase.from('board_cards').update(patch).eq('id', existing.id));
     }
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-    close(); toast(creating ? 'Task added' : 'Task saved'); loadTasks();
+    close(); toast(creating ? 'Task assigned' : 'Task saved'); loadTasks();
   };
 }
 
@@ -2995,10 +3000,14 @@ async function loadMyTasksCard() {
   const list = data || [];
   const count = (s) => list.filter((t) => t.status === s).length;
   if (!list.length) {
-    body.innerHTML = `
-      <div class="empty" style="padding:6px 2px;">No tasks yet — add one and move it across the board.</div>
-      <button class="btn ghost full sm" id="tc-add" type="button" style="margin-top:8px;">+ New task</button>`;
-    body.querySelector('#tc-add').onclick = () => setView('tasks');
+    if (me.role === 'admin') {
+      body.innerHTML = `
+        <div class="empty" style="padding:6px 2px;">Nothing assigned to you. Head to the board to assign work to the team.</div>
+        <button class="btn ghost full sm" id="tc-add" type="button" style="margin-top:8px;">Open board</button>`;
+      body.querySelector('#tc-add').onclick = () => setView('tasks');
+    } else {
+      body.innerHTML = '<div class="empty" style="padding:6px 2px;">Nothing assigned to you yet — your admin will add tasks here.</div>';
+    }
     return;
   }
   const review = count('awaiting_review');
