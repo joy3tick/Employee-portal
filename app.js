@@ -186,7 +186,6 @@ function icon(name, cls = 'ic') {
     edit: '<path d="M17 3a2.83 2.83 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
     camera: '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
     star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
-    target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5.5"/><circle cx="12" cy="12" r="2"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
     board: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>',
     'arrow-left': '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
@@ -236,7 +235,6 @@ let lastUserId = undefined;
 let clockTimer = null;
 const ui = { view: 'dashboard', search: '', teamUser: null };
 const reviews = { weekStart: weekStartISO() };
-const goals = { weekStart: weekStartISO(), rows: [] };
 const tasks = { rows: [], filter: 'all' };
 const TASK_STAGES = ['inbound', 'in_progress', 'awaiting_review', 'completed'];
 const TASK_LABEL = { inbound: 'Inbound', in_progress: 'In progress', awaiting_review: 'Awaiting review', completed: 'Completed' };
@@ -322,7 +320,6 @@ async function uploadAvatar(uid, file) {
   const { error: pErr } = await supabase.from('profiles').update({ avatar_url: url }).eq('id', uid);
   if (pErr) throw pErr;
   await supabase.from('office_days').update({ avatar_url: url }).eq('user_id', uid);
-  await supabase.from('goals').update({ avatar_url: url }).eq('user_id', uid);
   await supabase.from('board_cards').update({ assignee_avatar: url }).eq('assignee_id', uid);
   return url;
 }
@@ -332,7 +329,6 @@ async function removeAvatar(uid) {
   const { error } = await supabase.from('profiles').update({ avatar_url: null }).eq('id', uid);
   if (error) throw error;
   await supabase.from('office_days').update({ avatar_url: null }).eq('user_id', uid);
-  await supabase.from('goals').update({ avatar_url: null }).eq('user_id', uid);
   await supabase.from('board_cards').update({ assignee_avatar: null }).eq('assignee_id', uid);
   if (uid === me.id) me.avatar_url = null;
 }
@@ -495,7 +491,6 @@ function openProfileModal() {
       const { error } = await supabase.from('profiles').update({ full_name: name }).eq('id', me.id);
       if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
       await supabase.from('office_days').update({ display_name: name }).eq('user_id', me.id);
-      await supabase.from('goals').update({ display_name: name }).eq('user_id', me.id);
       await supabase.from('board_cards').update({ assignee_name: name }).eq('assignee_id', me.id);
       me.full_name = name;
       dirty = true;
@@ -568,7 +563,6 @@ function renderShell() {
         <nav class="s-nav">
           <button class="nav-item" data-view="dashboard" type="button">${icon('dash')}<span class="txt">Dashboard</span></button>
           <button class="nav-item" data-view="schedule" type="button">${icon('cal')}<span class="txt">Schedule</span></button>
-          <button class="nav-item" data-view="goals" type="button">${icon('target')}<span class="txt">Goals</span></button>
           <button class="nav-item" data-view="tasks" type="button">${icon('board')}<span class="txt">Tasks</span></button>
           ${isAdmin ? `<button class="nav-item" data-view="team" type="button">${icon('team')}<span class="txt">Team</span><span class="nav-badge" id="nav-pending" style="display:none"></span></button>` : ''}
           ${isAdmin ? `<button class="nav-item" data-view="reviews" type="button">${icon('star')}<span class="txt">Reviews</span></button>` : ''}
@@ -635,7 +629,6 @@ function setView(v) {
   const view = document.getElementById('view');
   if (!view) return;
   if (v === 'dashboard') viewDashboard(view);
-  else if (v === 'goals') viewGoals(view);
   else if (v === 'tasks') viewTasks(view);
   else if (v === 'team') viewTeam(view);
   else if (v === 'reviews') viewReviews(view);
@@ -740,10 +733,6 @@ function viewDashboard(view) {
         </div>
       </div>
       <aside class="dash-side">
-        <div class="card pad goals-card" id="goals-card">
-          <div class="card-head"><h3>Your goals this week</h3><button class="link-btn" id="gc-all" type="button">Open</button></div>
-          <div id="gc-body"><div class="spinner">Loading…</div></div>
-        </div>
         <div class="card pad tasks-card" id="tasks-card">
           <div class="card-head"><h3>Your tasks</h3><button class="link-btn" id="tc-all" type="button">Open board</button></div>
           <div id="tc-body"><div class="spinner">Loading…</div></div>
@@ -780,7 +769,6 @@ function viewDashboard(view) {
   document.getElementById('prof-avatar').onclick = openProfileModal;
   document.getElementById('mini-prev').onclick = () => shiftMini(-1);
   document.getElementById('mini-next').onclick = () => shiftMini(1);
-  document.getElementById('gc-all').onclick = () => setView('goals');
   document.getElementById('tc-all').onclick = () => setView('tasks');
 
   loadDashboard();
@@ -803,7 +791,6 @@ async function loadDashboard() {
   renderTodayCard();
   renderMonthCard();
   updateTopStack(dash.upRows);
-  loadMyGoalsCard();
   loadMyTasksCard();
   loadMyReviewCard();
   if (me.role === 'admin') loadPendingCard();
@@ -2273,381 +2260,6 @@ function openReviewModal(profile, ws, existing, onSaved) {
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
     close(); toast('Review saved'); if (onSaved) onSaved();
   };
-}
-
-// ===========================================================================
-// Goals / OKRs — weekly targets, visible to the whole team
-// ===========================================================================
-// A goal is either quantitative (a numeric target + progress, shown as a bar)
-// or a simple done / not-done checkbox (target left blank). Everyone can see
-// everyone's goals; you can only edit your own (admins can edit anyone's).
-const goalHasTarget = (g) => g.target != null && Number(g.target) > 0;
-function goalDone(g) {
-  return goalHasTarget(g) ? Number(g.progress) >= Number(g.target) : !!g.done;
-}
-function goalPct(g) {
-  if (!goalHasTarget(g)) return g.done ? 100 : 0;
-  return Math.max(0, Math.min(100, Math.round((Number(g.progress) / Number(g.target)) * 100)));
-}
-// A sensible +/- increment: 1/10th of the target, rounded, at least 1.
-function goalStep(g) {
-  return Math.max(1, Math.round((Number(g.target) || 0) / 10));
-}
-function fmtNum(n) {
-  n = Number(n) || 0;
-  return Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined, { maximumFractionDigits: 1 });
-}
-function goalMetricText(g) {
-  if (!goalHasTarget(g)) return g.done ? 'Done' : 'To do';
-  return `${fmtNum(g.progress)} / ${fmtNum(g.target)}${g.unit ? ` ${esc(g.unit)}` : ''}`;
-}
-
-// One goal row. `editable` adds the progress/done/edit controls.
-function goalRowHTML(g, editable) {
-  const has = goalHasTarget(g);
-  const done = goalDone(g);
-  let lead;
-  if (has) lead = `<span class="goal-ic">${icon('target', 'ic sm')}</span>`;
-  else if (editable) lead = `<button class="goal-check${done ? ' on' : ''}" data-goal-toggle type="button" aria-label="${done ? 'Mark not done' : 'Mark done'}">${done ? icon('check', 'ic sm') : ''}</button>`;
-  else lead = `<span class="goal-check ro${done ? ' on' : ''}">${done ? icon('check', 'ic sm') : ''}</span>`;
-
-  return `
-    <div class="goal-row${done ? ' done' : ''}" data-goal="${esc(g.id)}">
-      <div class="goal-main">
-        <div class="goal-top">
-          ${lead}
-          <span class="goal-title">${esc(g.title)}</span>
-          <span class="goal-metric${done ? ' ok' : ''}">${goalMetricText(g)}</span>
-        </div>
-        ${has ? `<div class="bar goal-bar"><i style="width:${goalPct(g)}%"></i></div>` : ''}
-      </div>
-      ${editable ? `
-        <div class="goal-ctrls">
-          ${has ? `
-            <button class="goal-step" data-goal-step="-1" type="button" aria-label="Decrease progress">−</button>
-            <button class="goal-step" data-goal-step="1" type="button" aria-label="Increase progress">+</button>` : ''}
-          <button class="goal-edit" data-goal-edit type="button" title="Edit goal">${icon('edit', 'ic sm')}</button>
-        </div>` : ''}
-    </div>`;
-}
-
-async function persistGoal(id, patch) {
-  const { error } = await supabase
-    .from('goals')
-    .update({ ...patch, updated_at: new Date().toISOString() })
-    .eq('id', id);
-  if (error) toast(error.message);
-  return !error;
-}
-
-// Wire the editable controls for every goal row in `scope`. `rerender` repaints
-// optimistically; `reload` resyncs from the server if a save fails.
-function wireGoalRows(scope, list, rerender, reload) {
-  const byId = new Map(list.map((g) => [g.id, g]));
-  scope.querySelectorAll('.goal-row[data-goal]').forEach((row) => {
-    const g = byId.get(row.dataset.goal);
-    if (!g) return;
-    row.querySelectorAll('[data-goal-step]').forEach((b) => {
-      b.onclick = async () => {
-        g.progress = Math.max(0, (Number(g.progress) || 0) + Number(b.dataset.goalStep) * goalStep(g));
-        rerender();
-        if (!(await persistGoal(g.id, { progress: g.progress }))) reload();
-      };
-    });
-    const tog = row.querySelector('[data-goal-toggle]');
-    if (tog) tog.onclick = async () => {
-      g.done = !goalDone(g);
-      rerender();
-      if (!(await persistGoal(g.id, { done: g.done }))) reload();
-    };
-    const edit = row.querySelector('[data-goal-edit]');
-    if (edit) edit.onclick = () => openGoalModal(g, g.week_start, reload);
-  });
-}
-
-function viewGoals(view) {
-  goals.weekStart = weekStartISO(); // always open on the current week
-  view.innerHTML = `
-    <div class="page-head">
-      <div>
-        <h1>Goals &amp; OKRs</h1>
-        <p class="subtitle" style="margin:2px 0 0;">Set your weekly targets, track progress, and see how the whole team is tracking — everyone's goals are visible to everyone.</p>
-      </div>
-    </div>
-    <div class="cal-toolbar">
-      <div class="cal-month-title" id="gl-title"></div>
-      <div class="cal-nav">
-        <button class="btn ghost sm" id="gl-prev" type="button" aria-label="Previous week">‹</button>
-        <button class="btn ghost sm" id="gl-this" type="button">This week</button>
-        <button class="btn ghost sm" id="gl-next" type="button" aria-label="Next week">›</button>
-      </div>
-    </div>
-    <div id="gl-stats" class="rv-stats"></div>
-    <div class="section" style="margin-top:4px;">
-      <div class="section-head">
-        <h2 style="margin:0">Your goals</h2>
-        <button class="btn primary sm" id="gl-add" type="button">+ Add goal</button>
-      </div>
-      <div class="card pad"><div id="gl-mine"><div class="spinner">Loading…</div></div></div>
-    </div>
-    <div class="section">
-      <div class="section-head"><h2 style="margin:0">Team goals</h2></div>
-      <div id="gl-team"><div class="spinner">Loading…</div></div>
-    </div>`;
-
-  view.querySelector('#gl-prev').onclick = () => { goals.weekStart = addDaysISO(goals.weekStart, -7); loadGoals(); };
-  view.querySelector('#gl-next').onclick = () => { goals.weekStart = addDaysISO(goals.weekStart, 7); loadGoals(); };
-  view.querySelector('#gl-this').onclick = () => { goals.weekStart = weekStartISO(); loadGoals(); };
-  view.querySelector('#gl-add').onclick = () => openGoalModal(null, goals.weekStart, loadGoals);
-  loadGoals();
-}
-
-async function loadGoals() {
-  const ws = goals.weekStart;
-  const title = document.getElementById('gl-title');
-  if (title) {
-    const rel = relWeekLabel(ws);
-    title.textContent = rel === fmtWeekRange(ws) ? weekTitle(ws) : `${rel} · ${fmtWeekRange(ws)}`;
-  }
-  const { data, error } = await supabase
-    .from('goals')
-    .select('id, user_id, week_start, title, target, progress, unit, done, display_name, avatar_url, created_at')
-    .eq('week_start', ws)
-    .order('created_at', { ascending: true });
-  if (error) {
-    const mineEl = document.getElementById('gl-mine');
-    const teamEl = document.getElementById('gl-team');
-    if (mineEl) mineEl.innerHTML = `<div class="empty">Couldn't load goals: ${esc(error.message)}</div>`;
-    if (teamEl) teamEl.innerHTML = '';
-    return;
-  }
-  goals.rows = data || [];
-  renderGoalsBody();
-}
-
-function renderGoalsBody() {
-  renderGoalsStats(document.getElementById('gl-stats'));
-  renderMyGoals(document.getElementById('gl-mine'));
-  renderTeamGoals(document.getElementById('gl-team'));
-}
-
-function renderGoalsStats(el) {
-  if (!el) return;
-  const rows = goals.rows;
-  const total = rows.length;
-  const done = rows.filter(goalDone).length;
-  const people = new Set(rows.map((r) => r.user_id)).size;
-  const pct = total ? Math.round((done / total) * 100) : 0;
-  const mine = rows.filter((r) => r.user_id === me.id).length;
-  el.innerHTML =
-    statCard('Goals set', total, `<span class="muted-mini">across ${people} ${people === 1 ? 'person' : 'people'}</span>`) +
-    statCard('Completed', total ? `${done}/${total}` : '—', `<span class="muted-mini">${total ? `${pct}% there` : 'none yet'}</span>`) +
-    statCard('Your goals', mine, '<span class="muted-mini">this week</span>');
-}
-
-function renderMyGoals(el) {
-  if (!el) return;
-  const mine = goals.rows.filter((r) => r.user_id === me.id);
-  if (!mine.length) {
-    el.innerHTML = `
-      <div class="empty" style="padding:6px 2px;">You haven't set any goals for this week yet — pick a target tied to your role and track it here.</div>
-      <div class="goal-empty-actions">
-        <button class="btn primary sm" id="gl-add2" type="button">+ Add a goal</button>
-        <button class="btn ghost sm" id="gl-repeat" type="button" style="display:none;">Repeat last week's goals</button>
-      </div>`;
-    el.querySelector('#gl-add2').onclick = () => openGoalModal(null, goals.weekStart, loadGoals);
-    maybeOfferRepeat(el.querySelector('#gl-repeat'));
-    return;
-  }
-  el.innerHTML = `<div class="goal-list">${mine.map((g) => goalRowHTML(g, true)).join('')}</div>`;
-  wireGoalRows(el, mine, renderGoalsBody, loadGoals);
-}
-
-// If the current week is empty but last week had goals, offer to carry them
-// over (titles + targets, progress reset) — handy for recurring weekly metrics.
-async function maybeOfferRepeat(btn) {
-  if (!btn) return;
-  const lastWs = addDaysISO(goals.weekStart, -7);
-  const { data } = await supabase
-    .from('goals')
-    .select('title, target, unit')
-    .eq('user_id', me.id)
-    .eq('week_start', lastWs);
-  if (!data || !data.length) return;
-  btn.style.display = '';
-  btn.onclick = async () => {
-    btn.disabled = true;
-    const rows = data.map((g) => ({
-      user_id: me.id,
-      week_start: goals.weekStart,
-      title: g.title,
-      target: g.target,
-      unit: g.unit,
-      progress: 0,
-      done: false,
-      display_name: me.full_name || me.email,
-      avatar_url: me.avatar_url || null,
-    }));
-    const { error } = await supabase.from('goals').insert(rows);
-    if (error) { toast(error.message); btn.disabled = false; return; }
-    toast(`Carried over ${rows.length} goal${rows.length === 1 ? '' : 's'}`);
-    loadGoals();
-  };
-}
-
-function renderTeamGoals(el) {
-  if (!el) return;
-  const isAdmin = me.role === 'admin';
-  const others = goals.rows.filter((r) => r.user_id !== me.id);
-  const groups = new Map();
-  for (const g of others) {
-    if (!groups.has(g.user_id)) groups.set(g.user_id, []);
-    groups.get(g.user_id).push(g);
-  }
-  if (!groups.size) {
-    el.innerHTML = '<div class="card pad"><div class="empty" style="padding:6px 2px;">No one else has set goals for this week yet.</div></div>';
-    return;
-  }
-  el.innerHTML = [...groups.values()].map((list) => {
-    const first = list[0];
-    const done = list.filter(goalDone).length;
-    return `
-      <div class="card pad goal-person">
-        <div class="goal-person-head">
-          ${avatarHTML(first.display_name, false, '', first.avatar_url)}
-          <div class="goal-person-text">
-            <div class="goal-person-name">${esc(first.display_name || 'Someone')}</div>
-            <div class="muted-mini">${done}/${list.length} on track</div>
-          </div>
-        </div>
-        <div class="goal-list">${list.map((g) => goalRowHTML(g, isAdmin)).join('')}</div>
-      </div>`;
-  }).join('');
-  if (isAdmin) wireGoalRows(el, others, renderGoalsBody, loadGoals);
-}
-
-// Add or edit one goal. `existing` null = create for me; otherwise edit that row
-// (admins may pass someone else's goal).
-function openGoalModal(existing, ws, onSaved) {
-  const owner = existing || { user_id: me.id, display_name: me.full_name || me.email, avatar_url: me.avatar_url || null };
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal card pad">
-      <h2 style="margin-bottom:4px;">${existing ? 'Edit goal' : 'New goal'}</h2>
-      <p class="subtitle" style="margin-bottom:16px;">Weekly target · ${esc(weekTitle(ws))}</p>
-      <label>Goal</label>
-      <input id="gm-title" type="text" maxlength="120" placeholder="e.g. Publish 5 articles" value="${esc(existing ? existing.title : '')}" />
-      <div class="goal-field-row">
-        <div>
-          <label>Target <span style="opacity:.7">(optional)</span></label>
-          <input id="gm-target" type="number" min="0" step="any" inputmode="decimal" placeholder="5" value="${existing && existing.target != null ? esc(existing.target) : ''}" />
-        </div>
-        <div>
-          <label>Unit <span style="opacity:.7">(optional)</span></label>
-          <input id="gm-unit" type="text" maxlength="24" placeholder="articles" value="${esc(existing ? existing.unit : '')}" />
-        </div>
-      </div>
-      ${existing ? `
-        <div id="gm-progress-wrap">
-          <label>Current progress</label>
-          <input id="gm-progress" type="number" min="0" step="any" inputmode="decimal" value="${esc(existing.progress)}" />
-        </div>` : ''}
-      <p class="muted-mini" style="margin:10px 0 0;">Leave the target blank for a simple done / not-done goal.</p>
-      <div id="gm-msg" class="msg"></div>
-      <div class="modal-foot">
-        ${existing ? '<button class="btn danger" id="gm-remove" type="button" style="margin-right:auto;">Delete</button>' : ''}
-        <button class="btn ghost" id="gm-cancel" type="button">Cancel</button>
-        <button class="btn primary" id="gm-save" type="button">${existing ? 'Save goal' : 'Add goal'}</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-
-  const close = () => overlay.remove();
-  const msg = overlay.querySelector('#gm-msg');
-  const titleEl = overlay.querySelector('#gm-title');
-  const targetEl = overlay.querySelector('#gm-target');
-  const unitEl = overlay.querySelector('#gm-unit');
-  const progressEl = overlay.querySelector('#gm-progress');
-  const progWrap = overlay.querySelector('#gm-progress-wrap');
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  overlay.querySelector('#gm-cancel').onclick = close;
-  titleEl.focus();
-
-  // The "current progress" field only makes sense for goals with a target.
-  const syncProgress = () => {
-    if (!progWrap) return;
-    progWrap.style.display = (targetEl.value.trim() !== '' && Number(targetEl.value) > 0) ? '' : 'none';
-  };
-  targetEl.oninput = syncProgress;
-  syncProgress();
-
-  const rm = overlay.querySelector('#gm-remove');
-  if (rm) rm.onclick = async () => {
-    rm.disabled = true;
-    const { error } = await supabase.from('goals').delete().eq('id', existing.id);
-    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; rm.disabled = false; return; }
-    close(); toast('Goal deleted'); if (onSaved) onSaved();
-  };
-
-  overlay.querySelector('#gm-save').onclick = async () => {
-    const title = titleEl.value.trim();
-    if (!title) { msg.textContent = 'Give your goal a short title.'; msg.className = 'msg show error'; return; }
-    let target = targetEl.value.trim() === '' ? null : Number(targetEl.value);
-    if (target != null && (!isFinite(target) || target < 0)) {
-      msg.textContent = 'Target must be a positive number (or blank).'; msg.className = 'msg show error'; return;
-    }
-    if (target === 0) target = null; // a target of 0 is really a done / not-done goal
-    const unit = unitEl.value.trim();
-    let progress = 0, done = false;
-    if (existing) {
-      progress = target != null ? Math.max(0, Number(progressEl && progressEl.value) || 0) : 0;
-      done = target == null ? !!existing.done : false;
-    }
-    const saveBtn = overlay.querySelector('#gm-save');
-    saveBtn.disabled = true;
-    const payload = {
-      user_id: owner.user_id, week_start: ws, title, target, unit, progress, done,
-      display_name: owner.display_name || '', avatar_url: owner.avatar_url || null,
-      updated_at: new Date().toISOString(),
-    };
-    const { error } = existing
-      ? await supabase.from('goals').update(payload).eq('id', existing.id)
-      : await supabase.from('goals').insert(payload);
-    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-    close(); toast(existing ? 'Goal updated' : 'Goal added'); if (onSaved) onSaved();
-  };
-}
-
-// Dashboard card: your own goals for the current week, with quick progress.
-async function loadMyGoalsCard() {
-  const card = document.getElementById('goals-card');
-  if (!card) return;
-  const body = card.querySelector('#gc-body');
-  const { data, error } = await supabase
-    .from('goals')
-    .select('id, user_id, week_start, title, target, progress, unit, done, display_name, avatar_url, created_at')
-    .eq('user_id', me.id)
-    .eq('week_start', weekStartISO())
-    .order('created_at', { ascending: true });
-  if (error) { card.remove(); return; } // e.g. schema not applied yet
-  const list = data || [];
-  if (!list.length) {
-    body.innerHTML = `
-      <div class="empty" style="padding:6px 2px;">No goals set for this week yet — set a target to keep yourself on track.</div>
-      <button class="btn ghost full sm" id="gc-add" type="button" style="margin-top:8px;">+ Add a goal</button>`;
-    body.querySelector('#gc-add').onclick = () => setView('goals');
-    return;
-  }
-  paintDashGoals(body, list);
-}
-
-function paintDashGoals(body, list) {
-  const done = list.filter(goalDone).length;
-  body.innerHTML =
-    `<div class="goal-list">${list.map((g) => goalRowHTML(g, true)).join('')}</div>
-     <div class="muted-mini gc-foot">${done}/${list.length} on track this week</div>`;
-  wireGoalRows(body, list, () => paintDashGoals(body, list), loadMyGoalsCard);
 }
 
 // ===========================================================================
