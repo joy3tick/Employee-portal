@@ -565,7 +565,7 @@ function renderShell() {
         <nav class="s-nav">
           <button class="nav-item" data-view="dashboard" type="button">${icon('dash')}<span class="txt">Dashboard</span></button>
           <button class="nav-item" data-view="schedule" type="button">${icon('cal')}<span class="txt">Schedule</span></button>
-          <button class="nav-item" data-view="tasks" type="button">${icon('board')}<span class="txt">Tasks</span></button>
+          <button class="nav-item" data-view="board" type="button">${icon('board')}<span class="txt">Board</span></button>
           ${isAdmin ? `<button class="nav-item" data-view="team" type="button">${icon('team')}<span class="txt">Team</span><span class="nav-badge" id="nav-pending" style="display:none"></span></button>` : ''}
           ${isAdmin ? `<button class="nav-item" data-view="reviews" type="button">${icon('star')}<span class="txt">Reviews</span></button>` : ''}
           <button class="nav-item" id="nav-settings" type="button">${icon('gear')}<span class="txt">Settings</span></button>
@@ -631,7 +631,7 @@ function setView(v) {
   const view = document.getElementById('view');
   if (!view) return;
   if (v === 'dashboard') viewDashboard(view);
-  else if (v === 'tasks') viewTasks(view);
+  else if (v === 'board') viewBoard(view);
   else if (v === 'team') viewTeam(view);
   else if (v === 'reviews') viewReviews(view);
   else viewSchedule(view);
@@ -735,8 +735,8 @@ function viewDashboard(view) {
         </div>
       </div>
       <aside class="dash-side">
-        <div class="card pad tasks-card" id="tasks-card">
-          <div class="card-head"><h3>Your tasks</h3><button class="link-btn" id="tc-all" type="button">Open board</button></div>
+        <div class="card pad board-card" id="board-card">
+          <div class="card-head"><h3>Your board</h3><button class="link-btn" id="tc-all" type="button">Open board</button></div>
           <div id="tc-body"><div class="spinner">Loading…</div></div>
         </div>
         <div class="card pad review-card" id="review-card">
@@ -771,7 +771,7 @@ function viewDashboard(view) {
   document.getElementById('prof-avatar').onclick = openProfileModal;
   document.getElementById('mini-prev').onclick = () => shiftMini(-1);
   document.getElementById('mini-next').onclick = () => shiftMini(1);
-  document.getElementById('tc-all').onclick = () => setView('tasks');
+  document.getElementById('tc-all').onclick = () => setView('board');
 
   loadDashboard();
 }
@@ -2289,7 +2289,7 @@ function taskSort(a, b) {
   return (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || '');
 }
 
-function viewTasks(view) {
+function viewBoard(view) {
   const isAdmin = me.role === 'admin';
   view.innerHTML = `
     <div class="page-head">
@@ -2318,11 +2318,11 @@ function viewTasks(view) {
     };
   });
   const addBtn = view.querySelector('#task-add');
-  if (addBtn) addBtn.onclick = () => openTaskModal(null);
-  loadTasks();
+  if (addBtn) addBtn.onclick = () => openBoardModal(null);
+  loadBoard();
 }
 
-async function loadTasks() {
+async function loadBoard() {
   const { data, error } = await supabase
     .from('board_cards')
     .select('id, title, description, status, due_date, assignee_id, assignee_name, assignee_avatar, created_by, created_at, updated_at, completed_at')
@@ -2359,7 +2359,7 @@ function renderBoard() {
           ${s === 'inbound' && isAdmin ? `<button class="kcol-add" id="kcol-add" type="button" title="Assign a task">${icon('plus', 'ic sm')}</button>` : ''}
         </div>
         <div class="kcol-body">
-          ${list.length ? list.map(taskCardHTML).join('') : `<div class="kcol-empty">${hint[s]}</div>`}
+          ${list.length ? list.map(boardCardHTML).join('') : `<div class="kcol-empty">${hint[s]}</div>`}
         </div>
       </div>`;
   }).join('');
@@ -2391,7 +2391,7 @@ function taskDueHTML(t) {
   return `<div class="kc-due${cls}">${icon('cal', 'ic sm')}<span>${esc(text)}</span></div>`;
 }
 
-function taskCardHTML(t) {
+function boardCardHTML(t) {
   const meFlag = t.assignee_id === me.id;
   const canDrag = me.role === 'admin' || (meFlag && t.status !== 'completed');
   const expanded = expandedTasks.has(t.id);
@@ -2439,7 +2439,7 @@ function taskCardControlsHTML(t) {
 function wireBoard(board) {
   const byId = new Map(tasks.rows.map((t) => [t.id, t]));
   const addBtn = board.querySelector('#kcol-add');
-  if (addBtn) addBtn.onclick = () => openTaskModal(null);
+  if (addBtn) addBtn.onclick = () => openBoardModal(null);
 
   board.querySelectorAll('.kanban-card').forEach((el) => {
     const t = byId.get(el.dataset.task);
@@ -2449,7 +2449,7 @@ function wireBoard(board) {
     });
     const del = el.querySelector('[data-del]');
     if (del) del.onclick = (e) => { e.stopPropagation(); confirmDeleteTask(t); };
-    el.querySelector('.kc-main').onclick = () => openTaskModal(t);
+    el.querySelector('.kc-main').onclick = () => openBoardModal(t);
     const exp = el.querySelector('[data-expand]');
     if (exp) exp.onclick = (e) => {
       e.stopPropagation();
@@ -2530,7 +2530,7 @@ function confirmDeleteTask(t) {
 
 // Create or view/edit a task. Admins get an assignee picker; the modal is
 // read-only for cards you don't own (transparency without edit rights).
-async function openTaskModal(existing) {
+async function openBoardModal(existing) {
   const creating = !existing;
   if (creating && me.role !== 'admin') { toast('Only an admin can assign tasks.'); return; }
   const editable = creating || taskCanEdit(existing);
@@ -2612,7 +2612,7 @@ async function openTaskModal(existing) {
       ({ error } = await supabase.from('board_cards').update(patch).eq('id', existing.id));
     }
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-    close(); toast(creating ? 'Task assigned' : 'Task saved'); loadTasks();
+    close(); toast(creating ? 'Task assigned' : 'Task saved'); loadBoard();
   };
 }
 
@@ -2641,7 +2641,7 @@ function openConfirm({ title, body, confirmLabel = 'Confirm', danger = false, on
 
 // Dashboard card: your task counts by stage.
 async function loadMyTasksCard() {
-  const card = document.getElementById('tasks-card');
+  const card = document.getElementById('board-card');
   if (!card) return;
   const body = card.querySelector('#tc-body');
   const { data, error } = await supabase.from('board_cards').select('status').eq('assignee_id', me.id);
@@ -2653,7 +2653,7 @@ async function loadMyTasksCard() {
       body.innerHTML = `
         <div class="empty" style="padding:6px 2px;">Nothing assigned to you. Head to the board to assign work to the team.</div>
         <button class="btn ghost full sm" id="tc-add" type="button" style="margin-top:8px;">Open board</button>`;
-      body.querySelector('#tc-add').onclick = () => setView('tasks');
+      body.querySelector('#tc-add').onclick = () => setView('board');
     } else {
       body.innerHTML = '<div class="empty" style="padding:6px 2px;">Nothing assigned to you yet — your admin will add tasks here.</div>';
     }
