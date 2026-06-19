@@ -203,7 +203,6 @@ function icon(name, cls = 'ic') {
     'arrow-right': '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
     trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
     chevron: '<polyline points="6 9 12 15 18 9"/>',
-    tasks: '<path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/>',
   };
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -578,7 +577,6 @@ function renderShell() {
           <button class="nav-item" data-view="dashboard" type="button">${icon('dash')}<span class="txt">Dashboard</span></button>
           <button class="nav-item" data-view="schedule" type="button">${icon('cal')}<span class="txt">Schedule</span></button>
           <button class="nav-item" data-view="board" type="button">${icon('board')}<span class="txt">Board</span></button>
-          <button class="nav-item" data-view="tasks" type="button">${icon('tasks')}<span class="txt">Tasks</span><span class="nav-badge" id="nav-tasks" style="display:none"></span></button>
           ${isAdmin ? `<button class="nav-item" data-view="team" type="button">${icon('team')}<span class="txt">Team</span><span class="nav-badge" id="nav-pending" style="display:none"></span></button>` : ''}
           ${isAdmin ? `<button class="nav-item" data-view="reviews" type="button">${icon('star')}<span class="txt">Reviews</span></button>` : ''}
           <button class="nav-item" id="nav-settings" type="button">${icon('gear')}<span class="txt">Settings</span></button>
@@ -619,7 +617,6 @@ function renderShell() {
 
   startClock();
   setView(ui.view || 'dashboard');
-  refreshTaskBadge();
 }
 
 function startClock() {
@@ -648,7 +645,6 @@ function setView(v) {
   else if (v === 'board') viewBoard(view);
   else if (v === 'team') viewTeam(view);
   else if (v === 'reviews') viewReviews(view);
-  else if (v === 'tasks') viewTasks(view);
   else viewSchedule(view);
 }
 
@@ -2901,248 +2897,6 @@ async function loadMyTasksCard() {
       ${TASK_STAGES.map((s) => `<div class="tk-chip stage-${s}"><span class="tk-chip-n">${count(s)}</span><span class="tk-chip-l">${TASK_LABEL[s]}</span></div>`).join('')}
     </div>
     <div class="muted-mini tk-mini-note">${review ? `${review} awaiting an admin sign-off` : active ? `${active} on your plate` : 'all caught up 🎉'}</div>`;
-}
-
-// ===========================================================================
-// Tasks — admins assign work; everyone has a Tasks tab for their own
-// ===========================================================================
-const taskState = { items: [] };
-const TASK_GROUPS = [['todo', 'To do'], ['in_progress', 'In progress'], ['done', 'Done']];
-const PRIORITY_LABEL = { low: 'Low', normal: 'Normal', high: 'High' };
-
-async function refreshTaskBadge() {
-  const badge = document.getElementById('nav-tasks');
-  if (!badge) return;
-  const { count, error } = await supabase
-    .from('tasks')
-    .select('id', { count: 'exact', head: true })
-    .eq('assignee_id', me.id)
-    .neq('status', 'done');
-  if (error || !count) { badge.style.display = 'none'; return; }
-  badge.textContent = count;
-  badge.style.display = '';
-}
-
-function viewTasks(view) {
-  const isAdmin = me.role === 'admin';
-  view.innerHTML = `
-    <div class="page-head">
-      <div>
-        <h1>${isAdmin ? 'Tasks' : 'Your tasks'}</h1>
-        <p class="subtitle" style="margin:2px 0 0;">${isAdmin
-          ? 'Assign work to the team and track how it’s going.'
-          : 'Work assigned to you. Update the status as you go.'}</p>
-      </div>
-      ${isAdmin ? '<button class="btn primary" id="task-assign" type="button">+ Assign task</button>' : ''}
-    </div>
-    <div id="task-list"><div class="spinner">Loading…</div></div>`;
-  if (isAdmin) document.getElementById('task-assign').onclick = () => openTaskModal(null);
-  loadTasks();
-}
-
-async function loadTasks() {
-  const listEl = document.getElementById('task-list');
-  let q = supabase
-    .from('tasks')
-    .select('*')
-    .order('due_date', { ascending: true, nullsFirst: false })
-    .order('created_at', { ascending: false });
-  if (me.role !== 'admin') q = q.eq('assignee_id', me.id);
-  const { data, error } = await q;
-  if (error) {
-    if (listEl) listEl.innerHTML = `<div class="empty">Couldn't load tasks: ${esc(error.message)}</div>`;
-    return;
-  }
-  taskState.items = data || [];
-  renderTaskList();
-  refreshTaskBadge();
-}
-
-function taskCardHTML(t, isAdmin) {
-  const overdue = t.due_date && t.due_date < TODAY && t.status !== 'done';
-  const scheduledPending = isAdmin && t.scheduled_for && t.scheduled_for > TODAY;
-  const opt = (v, label) => `<option value="${v}"${t.status === v ? ' selected' : ''}>${label}</option>`;
-  const foot = isAdmin
-    ? `<div class="task-who">${avatarHTML(t.assignee_name || '?', t.assignee_id === me.id, 'sm', t.assignee_avatar)}<span>${esc(t.assignee_name || 'Someone')}</span></div>`
-    : `<span class="tc-from">From ${esc(t.assigned_by_name || 'your admin')}</span>`;
-  return `
-    <article class="task-card${t.status === 'done' ? ' done' : ''}${scheduledPending ? ' scheduled' : ''}">
-      <div class="tc-top">
-        <span class="prio ${t.priority}">${PRIORITY_LABEL[t.priority] || 'Normal'}</span>
-        ${scheduledPending ? `<span class="task-sched">🗓 Shows ${fmtDate(t.scheduled_for)}</span>` : ''}
-        ${t.due_date ? `<span class="task-due${overdue ? ' overdue' : ''}">${overdue ? 'Overdue · ' : 'Due '}${fmtDate(t.due_date)}</span>` : ''}
-      </div>
-      <div class="tc-title">${esc(t.title)}</div>
-      ${t.description ? `<div class="tc-desc">${esc(t.description)}</div>` : ''}
-      <div class="tc-foot">
-        ${foot}
-        <div class="tc-actions">
-          <select class="task-status s-${t.status}" data-id="${esc(t.id)}" aria-label="Status">
-            ${opt('todo', 'To do')}${opt('in_progress', 'In progress')}${opt('done', 'Done')}
-          </select>
-          ${isAdmin ? `<button class="icon-sm" data-task-edit="${esc(t.id)}" type="button" title="Edit" aria-label="Edit task">${icon('edit', 'ic sm')}</button>
-          <button class="icon-sm danger" data-task-del="${esc(t.id)}" type="button" title="Delete" aria-label="Delete task">${icon('trash', 'ic sm')}</button>` : ''}
-        </div>
-      </div>
-    </article>`;
-}
-
-function renderTaskList() {
-  const el = document.getElementById('task-list');
-  if (!el) return;
-  const isAdmin = me.role === 'admin';
-  if (!taskState.items.length) {
-    el.innerHTML = `<div class="card pad"><div class="empty" style="padding:8px 2px">${isAdmin
-      ? 'No tasks yet. Use “Assign task” to create one.'
-      : 'Nothing assigned to you right now. 🎉'}</div></div>`;
-    return;
-  }
-  const items = taskState.items;
-  const cnt = (k) => items.filter((t) => t.status === k).length;
-  const overdue = items.filter((t) => t.due_date && t.due_date < TODAY && t.status !== 'done').length;
-  const summary = isAdmin ? `
-    <div class="task-summary">
-      <div class="tsum"><div class="tsum-n">${cnt('todo') + cnt('in_progress')}</div><div class="tsum-l">Open</div></div>
-      <div class="tsum${overdue ? ' danger' : ''}"><div class="tsum-n">${overdue}</div><div class="tsum-l">Overdue</div></div>
-      <div class="tsum"><div class="tsum-n">${cnt('done')}</div><div class="tsum-l">Completed</div></div>
-    </div>` : '';
-  const sections = TASK_GROUPS.map(([key, label]) => {
-    const group = items.filter((t) => t.status === key);
-    if (!group.length) return '';
-    return `<section class="task-section${key === 'done' ? ' is-done' : ''}">
-      <div class="task-section-head"><h2>${label}</h2><span class="count-pill">${group.length}</span></div>
-      <div class="task-grid">${group.map((t) => taskCardHTML(t, isAdmin)).join('')}</div>
-    </section>`;
-  }).join('');
-  el.innerHTML = summary + sections;
-
-  el.querySelectorAll('.task-status').forEach((s) => {
-    s.onchange = () => updateTaskStatus(s.dataset.id, s.value);
-  });
-  el.querySelectorAll('[data-task-edit]').forEach((b) => {
-    b.onclick = () => openTaskModal(taskState.items.find((t) => t.id === b.dataset.taskEdit) || null);
-  });
-  el.querySelectorAll('[data-task-del]').forEach((b) => {
-    b.onclick = () => deleteTask(b.dataset.taskDel);
-  });
-}
-
-async function updateTaskStatus(id, status) {
-  const t = taskState.items.find((x) => x.id === id);
-  if (!t || t.status === status) return;
-  const prev = t.status;
-  t.status = status;
-  renderTaskList();
-  refreshTaskBadge();
-  const { error } = await supabase.from('tasks').update({ status }).eq('id', id);
-  if (error) {
-    t.status = prev;
-    renderTaskList();
-    refreshTaskBadge();
-    toast(error.message);
-  }
-}
-
-async function deleteTask(id) {
-  const t = taskState.items.find((x) => x.id === id);
-  if (!t) return;
-  if (!window.confirm(`Delete task “${t.title}”?`)) return;
-  const snapshot = taskState.items;
-  taskState.items = taskState.items.filter((x) => x.id !== id);
-  renderTaskList();
-  const { error } = await supabase.from('tasks').delete().eq('id', id);
-  if (error) {
-    taskState.items = snapshot;
-    renderTaskList();
-    toast(error.message);
-    return;
-  }
-  toast('Task deleted');
-}
-
-// Admin: create or edit a task.
-async function openTaskModal(existing) {
-  const { data: emps, error } = await supabase
-    .from('profiles')
-    .select('id, full_name, email, avatar_url')
-    .eq('status', 'approved')
-    .order('full_name', { ascending: true });
-  if (error) { toast(error.message); return; }
-  if (!emps || !emps.length) { toast('No approved employees to assign to yet.'); return; }
-
-  const prio = existing ? existing.priority : 'normal';
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal card pad">
-      <h2 style="margin-bottom:4px;">${existing ? 'Edit task' : 'Assign a task'}</h2>
-      <p class="subtitle" style="margin-bottom:16px;">${existing ? 'Update the details below.' : 'Give someone something to work on.'}</p>
-      <label>Assign to</label>
-      <select id="t-assignee" class="select">
-        ${emps.map((e) => `<option value="${esc(e.id)}"${existing && existing.assignee_id === e.id ? ' selected' : ''}>${esc(e.full_name || e.email)}</option>`).join('')}
-      </select>
-      <label style="margin-top:12px;">Title</label>
-      <input id="t-title" type="text" maxlength="120" value="${esc(existing ? existing.title : '')}" placeholder="e.g. Finish the Q3 report" />
-      <label style="margin-top:12px;">Details <span style="opacity:.7">(optional)</span></label>
-      <textarea id="t-desc" rows="3" maxlength="2000" placeholder="Any context or steps…">${esc(existing ? existing.description : '')}</textarea>
-      <label style="margin-top:12px;">Priority</label>
-      <select id="t-prio" class="select">
-        <option value="low"${prio === 'low' ? ' selected' : ''}>Low</option>
-        <option value="normal"${prio === 'normal' ? ' selected' : ''}>Normal</option>
-        <option value="high"${prio === 'high' ? ' selected' : ''}>High</option>
-      </select>
-      <div class="t-row">
-        <div><label>Show on <span style="opacity:.7">(optional)</span></label><input type="date" id="t-sched" value="${existing && existing.scheduled_for ? existing.scheduled_for : ''}" /></div>
-        <div><label>Due date <span style="opacity:.7">(optional)</span></label><input type="date" id="t-due" value="${existing && existing.due_date ? existing.due_date : ''}" /></div>
-      </div>
-      <p class="muted-mini" style="margin:8px 0 0;">“Show on” keeps the task hidden from them until that day. Leave blank to show it right away.</p>
-      <div id="t-msg" class="msg"></div>
-      <div class="modal-foot">
-        ${existing ? '<button class="btn danger" id="t-delete" type="button" style="margin-right:auto;">Delete</button>' : ''}
-        <button class="btn ghost" id="t-cancel" type="button">Cancel</button>
-        <button class="btn primary" id="t-save" type="button">${existing ? 'Save' : 'Assign task'}</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  const close = () => overlay.remove();
-  const msg = overlay.querySelector('#t-msg');
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  overlay.querySelector('#t-cancel').onclick = close;
-
-  const del = overlay.querySelector('#t-delete');
-  if (del) del.onclick = () => { close(); deleteTask(existing.id); };
-
-  overlay.querySelector('#t-save').onclick = async () => {
-    const title = overlay.querySelector('#t-title').value.trim();
-    if (!title) { msg.textContent = 'Please give the task a title.'; msg.className = 'msg show error'; return; }
-    const assigneeId = overlay.querySelector('#t-assignee').value;
-    const emp = emps.find((e) => e.id === assigneeId);
-    const payload = {
-      title,
-      description: overlay.querySelector('#t-desc').value.trim(),
-      assignee_id: assigneeId,
-      assignee_name: emp.full_name || emp.email,
-      assignee_avatar: emp.avatar_url || null,
-      priority: overlay.querySelector('#t-prio').value,
-      due_date: overlay.querySelector('#t-due').value || null,
-      scheduled_for: overlay.querySelector('#t-sched').value || null,
-    };
-    const saveBtn = overlay.querySelector('#t-save');
-    saveBtn.disabled = true;
-    let err;
-    if (existing) {
-      ({ error: err } = await supabase.from('tasks').update(payload).eq('id', existing.id));
-    } else {
-      payload.assigned_by = me.id;
-      payload.assigned_by_name = me.full_name || me.email;
-      payload.status = 'todo';
-      ({ error: err } = await supabase.from('tasks').insert(payload));
-    }
-    if (err) { msg.textContent = err.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-    close();
-    toast(existing ? 'Task updated' : 'Task assigned');
-    loadTasks();
-  };
 }
 
 app.addEventListener('click', async (e) => {
