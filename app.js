@@ -248,7 +248,7 @@ let lastUserId = undefined;
 let clockTimer = null;
 const ui = { view: 'dashboard', search: '', teamUser: null };
 const reviews = { weekStart: weekStartISO() };
-const tasks = { rows: [], filter: 'mine' }; // board opens on "Just me" by default
+const tasks = { rows: [], filter: null }; // default decided per-role on first open
 const TASK_STAGES = ['inbound', 'in_progress', 'awaiting_review', 'completed'];
 const TASK_LABEL = { inbound: 'Inbound', in_progress: 'In progress', awaiting_review: 'Awaiting review', completed: 'Completed' };
 let taskDragId = null; // id of the card being dragged (desktop drag-and-drop)
@@ -2523,6 +2523,9 @@ function taskSort(a, b) {
 
 function viewBoard(view) {
   const isAdmin = me.role === 'admin';
+  // Admins manage the whole board, so they open on "Everyone"; employees on
+  // their own cards. (Only set the first time — a manual toggle then sticks.)
+  if (tasks.filter === null) tasks.filter = isAdmin ? 'all' : 'mine';
   view.innerHTML = `
     <div class="page-head">
       <div>
