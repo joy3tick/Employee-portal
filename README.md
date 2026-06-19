@@ -10,7 +10,12 @@ A simple internal portal for Redline employees:
 - **Profile pictures** — everyone can upload their own photo; admins can set one for any employee.
 - **Per-employee insights (admin)** — open any user to see days this week/month/all-time, hours this month/all-time, and weekly averages, then add or edit the hours on any specific day.
 - **Weekly performance reviews** — admins rate each employee 1–10 with a note, once per week (any time during the week). A **Reviews** page shows every employee's status for a chosen week, and each employee's profile keeps their full review history. **Employees see their own reviews** (rating + note) on their dashboard as soon as you post them — but can't see anyone else's or edit their own.
-- **Task board (Trello-style)** — a shared Kanban with four columns: **Inbound → In progress → Awaiting review → Completed**. **Only admins create, assign, and edit cards** (title, details, assignee, optional **due date** — overdue cards flag red); employees can't add or change them. Employees drag the work assigned to them through the first three columns (or use the ◀ ▶ buttons on touch), and can open a card read-only — including **expanding it inline** (chevron) to read the full task. Crucially, **only an admin can move a card into _Completed_** — employees push their work to *Awaiting review* and see a "⏳ Admin sign-off" tag until an admin hits **✓ Complete**. Once completed, the **assignee or an admin can delete** the card — or just leave it. The whole board is visible to everyone, and your dashboard shows a per-stage count of your own cards.
+- **Task board (Trello-style)** — a shared Kanban with four columns: **Inbound → In progress → Awaiting review → Completed**. **Only admins create, assign, and edit cards** (title, details, assignee, optional **due date** — overdue cards flag red — and colored **labels** like *Urgent* / *Blocked* / *Design*); employees can't add or change them. Employees drag the work assigned to them through the first three columns (or use the ◀ ▶ buttons on touch), and can **drag to reorder** cards within a column. They can open any card read-only — including **expanding it inline** (chevron) to read the full task. Crucially, **only an admin can move a card into _Completed_** — employees push their work to *Awaiting review* and see a "⏳ Admin sign-off" tag until an admin hits **✓ Complete**. Once completed, the **assignee or an admin can delete** the card — or just leave it.
+  - **Filters** — narrow the board by **assignee**, **label**, or **due date** (overdue / due today / this week / none), on top of the Everyone / Just me toggle.
+  - **Checklists** — admins break a card into sub-tasks; the **assignee ticks them off** (a progress bar + *3/5* badge show on the card face), but only admins add, rename, or remove items.
+  - **Comments** — everyone can discuss a card in a thread (you can delete your own; admins can delete any).
+  
+  The whole board is visible to everyone, and your dashboard shows a per-stage count of your own cards.
 
 It's a **static web app** (plain HTML/CSS/JS, no build step) that talks directly to **Supabase** (Auth + Postgres). There's no server to run — it's hosted on **Vercel** and all security is enforced by Postgres Row Level Security.
 
@@ -33,7 +38,7 @@ Open the SQL editor, paste the contents of [`supabase/schema.sql`](supabase/sche
 
 This creates the tables, the auto-profile trigger (which makes **alexrogul@gmail.com** an admin automatically), the `avatars` storage bucket, and the security policies.
 
-> **Updating an existing project?** The schema is idempotent — whenever you pull new features (like remote days, company events, weekly reviews, assigned tasks, or the task board), just paste and **Run** it again to add the new tables/columns, the `avatars` bucket, and the new policies.
+> **Updating an existing project?** The schema is idempotent — whenever you pull new features (like remote days, company events, weekly reviews, or the task board with its labels, checklists, and comments), just paste and **Run** it again to add the new tables/columns, the `avatars` bucket, and the new policies.
 
 ### 2. Turn off email confirmation (recommended)
 So signup is instant (admin approval is the real gate anyway):
