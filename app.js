@@ -187,6 +187,7 @@ function icon(name, cls = 'ic') {
     camera: '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
     star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
     tasks: '<path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/>',
+    trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
   };
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -2248,31 +2249,29 @@ function taskCardHTML(t, isAdmin) {
   const overdue = t.due_date && t.due_date < TODAY && t.status !== 'done';
   const scheduledPending = isAdmin && t.scheduled_for && t.scheduled_for > TODAY;
   const opt = (v, label) => `<option value="${v}"${t.status === v ? ' selected' : ''}>${label}</option>`;
-  const meta = isAdmin
+  const foot = isAdmin
     ? `<div class="task-who">${avatarHTML(t.assignee_name || '?', t.assignee_id === me.id, 'sm', t.assignee_avatar)}<span>${esc(t.assignee_name || 'Someone')}</span></div>`
-    : `<span class="muted-mini">Assigned by ${esc(t.assigned_by_name || 'your admin')}</span>`;
+    : `<span class="tc-from">From ${esc(t.assigned_by_name || 'your admin')}</span>`;
   return `
-    <div class="task-card${t.status === 'done' ? ' done' : ''}${scheduledPending ? ' scheduled' : ''}">
-      <div class="task-main">
-        <div class="task-top">
-          <span class="prio ${t.priority}">${PRIORITY_LABEL[t.priority] || 'Normal'}</span>
-          ${scheduledPending ? `<span class="task-sched">🗓 Shows ${fmtDate(t.scheduled_for)}</span>` : ''}
-          ${t.due_date ? `<span class="task-due${overdue ? ' overdue' : ''}">Due ${fmtDate(t.due_date)}</span>` : ''}
+    <article class="task-card${t.status === 'done' ? ' done' : ''}${scheduledPending ? ' scheduled' : ''}">
+      <div class="tc-top">
+        <span class="prio ${t.priority}">${PRIORITY_LABEL[t.priority] || 'Normal'}</span>
+        ${scheduledPending ? `<span class="task-sched">🗓 Shows ${fmtDate(t.scheduled_for)}</span>` : ''}
+        ${t.due_date ? `<span class="task-due${overdue ? ' overdue' : ''}">${overdue ? 'Overdue · ' : 'Due '}${fmtDate(t.due_date)}</span>` : ''}
+      </div>
+      <div class="tc-title">${esc(t.title)}</div>
+      ${t.description ? `<div class="tc-desc">${esc(t.description)}</div>` : ''}
+      <div class="tc-foot">
+        ${foot}
+        <div class="tc-actions">
+          <select class="task-status s-${t.status}" data-id="${esc(t.id)}" aria-label="Status">
+            ${opt('todo', 'To do')}${opt('in_progress', 'In progress')}${opt('done', 'Done')}
+          </select>
+          ${isAdmin ? `<button class="icon-sm" data-task-edit="${esc(t.id)}" type="button" title="Edit" aria-label="Edit task">${icon('edit', 'ic sm')}</button>
+          <button class="icon-sm danger" data-task-del="${esc(t.id)}" type="button" title="Delete" aria-label="Delete task">${icon('trash', 'ic sm')}</button>` : ''}
         </div>
-        <div class="task-title">${esc(t.title)}</div>
-        ${t.description ? `<div class="task-desc">${esc(t.description)}</div>` : ''}
-        <div class="task-meta">${meta}</div>
       </div>
-      <div class="task-actions">
-        <select class="task-status" data-id="${esc(t.id)}" aria-label="Status">
-          ${opt('todo', 'To do')}${opt('in_progress', 'In progress')}${opt('done', 'Done')}
-        </select>
-        ${isAdmin ? `<div class="task-admin-btns">
-          <button class="btn ghost sm" data-task-edit="${esc(t.id)}" type="button">Edit</button>
-          <button class="btn danger sm" data-task-del="${esc(t.id)}" type="button">Delete</button>
-        </div>` : ''}
-      </div>
-    </div>`;
+    </article>`;
 }
 
 function renderTaskList() {
@@ -2285,14 +2284,24 @@ function renderTaskList() {
       : 'Nothing assigned to you right now. 🎉'}</div></div>`;
     return;
   }
-  el.innerHTML = TASK_GROUPS.map(([key, label]) => {
-    const items = taskState.items.filter((t) => t.status === key);
-    if (!items.length) return '';
-    return `<div class="task-group">
-      <div class="task-group-head">${label} <span class="count-pill">${items.length}</span></div>
-      <div class="card pad task-cards">${items.map((t) => taskCardHTML(t, isAdmin)).join('')}</div>
-    </div>`;
+  const items = taskState.items;
+  const cnt = (k) => items.filter((t) => t.status === k).length;
+  const overdue = items.filter((t) => t.due_date && t.due_date < TODAY && t.status !== 'done').length;
+  const summary = isAdmin ? `
+    <div class="task-summary">
+      <div class="tsum"><div class="tsum-n">${cnt('todo') + cnt('in_progress')}</div><div class="tsum-l">Open</div></div>
+      <div class="tsum${overdue ? ' danger' : ''}"><div class="tsum-n">${overdue}</div><div class="tsum-l">Overdue</div></div>
+      <div class="tsum"><div class="tsum-n">${cnt('done')}</div><div class="tsum-l">Completed</div></div>
+    </div>` : '';
+  const sections = TASK_GROUPS.map(([key, label]) => {
+    const group = items.filter((t) => t.status === key);
+    if (!group.length) return '';
+    return `<section class="task-section${key === 'done' ? ' is-done' : ''}">
+      <div class="task-section-head"><h2>${label}</h2><span class="count-pill">${group.length}</span></div>
+      <div class="task-grid">${group.map((t) => taskCardHTML(t, isAdmin)).join('')}</div>
+    </section>`;
   }).join('');
+  el.innerHTML = summary + sections;
 
   el.querySelectorAll('.task-status').forEach((s) => {
     s.onchange = () => updateTaskStatus(s.dataset.id, s.value);
