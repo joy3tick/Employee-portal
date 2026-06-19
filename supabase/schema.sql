@@ -1,9 +1,18 @@
 -- ===========================================================================
 -- Redline Employee Portal — Supabase schema (static / client-direct version)
 -- ---------------------------------------------------------------------------
--- HOW TO APPLY:
+-- HOW TO APPLY (FRESH project only):
 --   1. Supabase dashboard -> SQL Editor -> "New query".
---   2. Paste this whole file and click "Run".  (Safe to run more than once.)
+--   2. Paste this whole file and click "Run".
+--
+-- ⚠️  DO NOT re-run this whole file against a LIVE project that people are
+--     using. It drops & recreates the profiles / office_days security policies
+--     and briefly locks those tables — and because the app reads `profiles` on
+--     every page load to sign you in, re-running this on a live site can make it
+--     hang on "Loading…" until the script finishes.
+--     To ADD a feature to a live project, run the small, isolated migration for
+--     that feature instead (e.g. supabase/board_update.sql), which only adds the
+--     new objects and never touches the login/schedule policies.
 --
 -- The web app talks to Supabase directly from the browser with the anon key,
 -- so ALL security lives in the Row Level Security policies below.
@@ -275,6 +284,18 @@ create table if not exists public.board_cards (
 );
 -- In case the table predates due dates:
 alter table public.board_cards add column if not exists due_date date;
+-- Colored labels (preset keys picked in the app) + manual ordering within a
+-- column. sort_order is a float so a card can be dropped *between* two others
+-- without renumbering the rest. Backfill existing rows from their timestamp so
+-- they keep today's order but get distinct values to interleave with.
+alter table public.board_cards add column if not exists labels text[] not null default '{}';
+alter table public.board_cards add column if not exists sort_order double precision;
+-- Backfill existing rows so they keep today's order. sort_order is left NULLABLE
+-- on purpose (the app treats a null as 0 and sets a value on every new/moved
+-- card), so this migration can never fail on an unexpected row.
+update public.board_cards
+  set sort_order = extract(epoch from coalesce(updated_at, created_at, now()))
+  where sort_order is null;
 create index if not exists board_cards_status_idx   on public.board_cards (status);
 create index if not exists board_cards_assignee_idx on public.board_cards (assignee_id);
 create index if not exists board_cards_updated_idx  on public.board_cards (updated_at);
@@ -327,6 +348,7 @@ begin
     new.title           := old.title;
     new.description     := old.description;
     new.due_date        := old.due_date;
+    new.labels          := old.labels;          -- only admins (re)label cards
     new.assignee_id     := old.assignee_id;
     new.assignee_name   := old.assignee_name;
     new.assignee_avatar := old.assignee_avatar;
@@ -334,6 +356,8 @@ begin
     new.created_at      := old.created_at;
     new.completed_at    := old.completed_at;
     new.completed_by    := old.completed_by;
+    -- NOTE: status and sort_order are intentionally left writable, so an
+    -- assignee can move and reorder their own (non-completed) cards.
   end if;
   return new;
 end;
@@ -343,6 +367,105 @@ drop trigger if exists protect_board_card_columns on public.board_cards;
 create trigger protect_board_card_columns
   before update on public.board_cards
   for each row execute function public.protect_board_card_columns();
+
+-- ---------------------------------------------------------------------------
+-- Card checklists — sub-tasks inside a board card.
+-- ---------------------------------------------------------------------------
+-- Admins define the items (the sub-steps of a task). The card's ASSIGNEE can
+-- tick them off (toggle `done`) but can't add, rename, reorder, or delete them
+-- — a BEFORE UPDATE trigger freezes every column except `done` for non-admins,
+-- mirroring how the card body itself is admin-only.
+create table if not exists public.card_checklist_items (
+  id          uuid primary key default gen_random_uuid(),
+  card_id     uuid not null references public.board_cards (id) on delete cascade,
+  text        text not null,
+  done        boolean not null default false,
+  sort_order  double precision not null default 0,
+  created_at  timestamptz not null default now()
+);
+create index if not exists card_checklist_card_idx on public.card_checklist_items (card_id, sort_order);
+
+alter table public.card_checklist_items enable row level security;
+
+-- Everyone approved can read every card's checklist (the board is shared).
+drop policy if exists checklist_select on public.card_checklist_items;
+create policy checklist_select on public.card_checklist_items for select
+  using (public.is_approved());
+
+-- Admins create / edit / delete checklist items.
+drop policy if exists checklist_admin_all on public.card_checklist_items;
+create policy checklist_admin_all on public.card_checklist_items for all
+  using (public.is_admin()) with check (public.is_admin());
+
+-- The card's assignee may UPDATE items on their own card (to tick them off).
+drop policy if exists checklist_update_assignee on public.card_checklist_items;
+create policy checklist_update_assignee on public.card_checklist_items for update
+  using (public.is_approved() and exists (
+    select 1 from public.board_cards c where c.id = card_id and c.assignee_id = auth.uid()
+  ))
+  with check (public.is_approved() and exists (
+    select 1 from public.board_cards c where c.id = card_id and c.assignee_id = auth.uid()
+  ));
+
+-- Freeze everything except `done` for non-admins (so the assignee can only
+-- check items off, never reword or reorder them).
+create or replace function public.protect_checklist_columns()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    new.id         := old.id;
+    new.card_id    := old.card_id;
+    new.text       := old.text;
+    new.sort_order := old.sort_order;
+    new.created_at := old.created_at;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_checklist_columns on public.card_checklist_items;
+create trigger protect_checklist_columns
+  before update on public.card_checklist_items
+  for each row execute function public.protect_checklist_columns();
+
+-- ---------------------------------------------------------------------------
+-- Card comments — a discussion thread on each board card (everyone).
+-- ---------------------------------------------------------------------------
+-- author_name + author_avatar are denormalized (like office_days) so the whole
+-- team can see who said what without reading each other's profile rows.
+create table if not exists public.card_comments (
+  id            uuid primary key default gen_random_uuid(),
+  card_id       uuid not null references public.board_cards (id) on delete cascade,
+  author_id     uuid references public.profiles (id) on delete set null,
+  author_name   text not null default '',
+  author_avatar text,
+  body          text not null,
+  created_at    timestamptz not null default now()
+);
+create index if not exists card_comments_card_idx on public.card_comments (card_id, created_at);
+
+alter table public.card_comments enable row level security;
+
+-- Everyone approved can read the thread.
+drop policy if exists card_comments_select on public.card_comments;
+create policy card_comments_select on public.card_comments for select
+  using (public.is_approved());
+
+-- Any approved user can post — but only AS themselves (author_id = auth.uid()).
+drop policy if exists card_comments_insert on public.card_comments;
+create policy card_comments_insert on public.card_comments for insert with check (
+  public.is_approved() and author_id = auth.uid()
+);
+
+-- You can delete your own comment; admins can delete anyone's.
+drop policy if exists card_comments_delete on public.card_comments;
+create policy card_comments_delete on public.card_comments for delete using (
+  author_id = auth.uid() or public.is_admin()
+);
 
 -- ---------------------------------------------------------------------------
 -- Company events / off-sites (admin-managed, everyone sees them)
@@ -376,3 +499,10 @@ create policy events_select_approved on public.events for select
   using (public.is_approved());
 create policy events_admin_all on public.events for all
   using (public.is_admin()) with check (public.is_admin());
+
+-- ---------------------------------------------------------------------------
+-- Reload the PostgREST schema cache so the new tables/columns are queryable
+-- immediately (otherwise there's a brief window after a migration where the API
+-- can't see them yet). Safe to run anytime.
+-- ---------------------------------------------------------------------------
+notify pgrst, 'reload schema';

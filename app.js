@@ -203,7 +203,8 @@ function icon(name, cls = 'ic') {
     'arrow-right': '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
     trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
     chevron: '<polyline points="6 9 12 15 18 9"/>',
-  };
+    comment: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>',
+    filter: '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
 
@@ -247,9 +248,21 @@ let lastUserId = undefined;
 let clockTimer = null;
 const ui = { view: 'dashboard', search: '', teamUser: null };
 const reviews = { weekStart: weekStartISO() };
-const tasks = { rows: [], filter: null }; // default decided per-role on first open
+// filter   = 'all' | 'mine' (the Everyone/Just me segment; decided per-role on first open)
+// assignee = 'all' | a user id   |  label = 'all' | a label key  |  due = see dueMatches()
+// checklist/comments = { [card_id]: [...] }, loaded alongside the cards.
+const tasks = { rows: [], filter: null, assignee: 'all', label: 'all', due: 'all', checklist: {}, comments: {} };
 const TASK_STAGES = ['inbound', 'in_progress', 'awaiting_review', 'completed'];
 const TASK_LABEL = { inbound: 'Inbound', in_progress: 'In progress', awaiting_review: 'Awaiting review', completed: 'Completed' };
+// Preset card labels (admins tag cards with these; they render as colored pills).
+const CARD_LABELS = {
+  urgent:   { label: 'Urgent',    color: 'var(--accent)' },
+  blocked:  { label: 'Blocked',   color: 'var(--amber)' },
+  design:   { label: 'Design',    color: 'var(--event)' },
+  feature:  { label: 'Feature',   color: 'var(--vac)' },
+  research: { label: 'Research',  color: 'var(--info)' },
+  quick:    { label: 'Quick win', color: 'var(--green)' },
+};
 let taskDragId = null; // id of the card being dragged (desktop drag-and-drop)
 const expandedTasks = new Set(); // ids of cards expanded inline on the board
 
@@ -2512,9 +2525,73 @@ function taskCanDelete(t) {
 function taskCanEdit() {
   return me.role === 'admin'; // only admins edit task content; employees just move cards
 }
-// Most recently touched first, so a card you just moved pops to the top.
+// Cards are ordered by sort_order (highest first = top of the column); ties fall
+// back to most-recently-touched. Drag-to-reorder writes sort_order; a moved card
+// gets a fresh high value so it pops to the top of its new column.
 function taskSort(a, b) {
+  const ao = a.sort_order ?? 0, bo = b.sort_order ?? 0;
+  if (ao !== bo) return bo - ao;
   return (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || '');
+}
+
+const groupBy = (arr, key) => {
+  const m = {};
+  for (const x of arr || []) (m[x[key]] || (m[x[key]] = [])).push(x);
+  return m;
+};
+
+// Colored label pills (shared by the card face and the read-only modal).
+function labelPillsHTML(labels) {
+  return (labels || [])
+    .filter((k) => CARD_LABELS[k])
+    .map((k) => `<span class="kc-label" style="--lc:${CARD_LABELS[k].color}">${esc(CARD_LABELS[k].label)}</span>`)
+    .join('');
+}
+
+// Does a card match the "Due" filter dropdown?
+function dueMatches(t, mode) {
+  if (mode === 'none') return !t.due_date;
+  if (!t.due_date) return false;
+  if (mode === 'overdue') return t.status !== 'completed' && t.due_date < TODAY;
+  if (mode === 'today') return t.due_date === TODAY;
+  if (mode === 'week') return t.due_date >= TODAY && t.due_date <= addDaysISO(TODAY, 7);
+  return true;
+}
+
+// The cards visible right now = Everyone/Just-me segment AND the filter dropdowns.
+function filteredRows() {
+  let rows = tasks.rows;
+  if (tasks.filter === 'mine') rows = rows.filter((t) => t.assignee_id === me.id);
+  if (tasks.assignee && tasks.assignee !== 'all') rows = rows.filter((t) => t.assignee_id === tasks.assignee);
+  if (tasks.label && tasks.label !== 'all') rows = rows.filter((t) => (t.labels || []).includes(tasks.label));
+  if (tasks.due && tasks.due !== 'all') rows = rows.filter((t) => dueMatches(t, tasks.due));
+  return rows;
+}
+
+// Board writes that tolerate the new schema NOT being applied yet, so the board
+// can never break if the DB migration hasn't been run. On a "missing column /
+// table" error we strip the new fields (labels / sort_order) and retry, so
+// creating, moving and editing cards keeps working regardless.
+const isMissingSchema = (e) =>
+  !!e && (e.code === 'PGRST204' || e.code === 'PGRST205' || e.code === '42703' || e.code === '42P01'
+    || /could not find|does not exist|schema cache/i.test(e.message || ''));
+
+async function boardCardsUpdate(id, patch) {
+  let { error } = await supabase.from('board_cards').update(patch).eq('id', id);
+  if (error && isMissingSchema(error)) {
+    const { labels, sort_order, ...safe } = patch;
+    ({ error } = await supabase.from('board_cards').update(safe).eq('id', id));
+  }
+  return { error };
+}
+
+async function boardCardsInsert(row) {
+  let { error } = await supabase.from('board_cards').insert(row);
+  if (error && isMissingSchema(error)) {
+    const { labels, sort_order, ...safe } = row;
+    ({ error } = await supabase.from('board_cards').insert(safe));
+  }
+  return { error };
 }
 
 function viewBoard(view) {
@@ -2522,6 +2599,7 @@ function viewBoard(view) {
   // Admins manage the whole board, so they open on "Everyone"; employees on
   // their own cards. (Only set the first time — a manual toggle then sticks.)
   if (tasks.filter === null) tasks.filter = isAdmin ? 'all' : 'mine';
+  const dueOpts = [['all', 'Any date'], ['overdue', 'Overdue'], ['today', 'Due today'], ['week', 'Due this week'], ['none', 'No due date']];
   view.innerHTML = `
     <div class="page-head">
       <div>
@@ -2538,6 +2616,13 @@ function viewBoard(view) {
         ${isAdmin ? `<button class="btn primary" id="task-add" type="button">${icon('plus', 'ic sm')}<span>Assign task</span></button>` : ''}
       </div>
     </div>
+    <div class="board-filters" id="board-filters">
+      <span class="bf-ic">${icon('filter', 'ic sm')}</span>
+      ${isAdmin ? `<label class="bf">Assignee <select id="bf-assignee"><option value="all">Everyone</option></select></label>` : ''}
+      <label class="bf">Label <select id="bf-label"><option value="all">Any label</option></select></label>
+      <label class="bf">Due <select id="bf-due">${dueOpts.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+      <button class="btn ghost sm" id="bf-clear" type="button">Clear</button>
+    </div>
     <div id="task-stats" class="stats"></div>
     <div class="kanban" id="kanban"><div class="spinner">Loading…</div></div>`;
 
@@ -2548,29 +2633,72 @@ function viewBoard(view) {
       renderBoard();
     };
   });
+  const aSel = view.querySelector('#bf-assignee');
+  if (aSel) aSel.onchange = () => { tasks.assignee = aSel.value; renderBoard(); };
+  const lSel = view.querySelector('#bf-label');
+  if (lSel) lSel.onchange = () => { tasks.label = lSel.value; renderBoard(); };
+  const dSel = view.querySelector('#bf-due');
+  if (dSel) { dSel.value = tasks.due; dSel.onchange = () => { tasks.due = dSel.value; renderBoard(); }; }
+  const clr = view.querySelector('#bf-clear');
+  if (clr) clr.onclick = () => {
+    tasks.assignee = 'all'; tasks.label = 'all'; tasks.due = 'all';
+    if (dSel) dSel.value = 'all';
+    populateBoardFilters();
+    renderBoard();
+  };
   const addBtn = view.querySelector('#task-add');
   if (addBtn) addBtn.onclick = () => openBoardModal(null);
   loadBoard();
 }
 
 async function loadBoard() {
-  const { data, error } = await supabase
-    .from('board_cards')
-    .select('id, title, description, status, due_date, assignee_id, assignee_name, assignee_avatar, created_by, created_at, updated_at, completed_at')
-    .order('updated_at', { ascending: false });
   const board = document.getElementById('kanban');
-  if (error) {
-    if (board) board.innerHTML = `<div class="empty">Couldn't load the board: ${esc(error.message)}</div>`;
+  // Cards, plus their checklist items and comments. The latter two tables may
+  // not exist yet on an older database — treat those errors as "empty" so the
+  // board still loads, then the user re-runs schema.sql to light them up.
+  const [cardsRes, listRes, comRes] = await Promise.all([
+    supabase.from('board_cards').select('*').order('updated_at', { ascending: false }),
+    supabase.from('card_checklist_items').select('id, card_id, text, done, sort_order'),
+    supabase.from('card_comments').select('id, card_id, author_id, author_name, author_avatar, body, created_at'),
+  ]);
+  if (cardsRes.error) {
+    if (board) board.innerHTML = `<div class="empty">Couldn't load the board: ${esc(cardsRes.error.message)}</div>`;
     return;
   }
-  tasks.rows = data || [];
+  tasks.rows = cardsRes.data || [];
+  tasks.checklist = groupBy(listRes.error ? [] : listRes.data, 'card_id');
+  tasks.comments = groupBy(comRes.error ? [] : comRes.data, 'card_id');
+  populateBoardFilters();
   renderBoard();
+}
+
+// Fill the Assignee + Label dropdowns from whoever/whatever is actually on the
+// board right now, keeping the current selection if it's still valid.
+function populateBoardFilters() {
+  const aSel = document.getElementById('bf-assignee');
+  if (aSel) {
+    const seen = new Map();
+    tasks.rows.forEach((t) => { if (t.assignee_id && !seen.has(t.assignee_id)) seen.set(t.assignee_id, t.assignee_name || 'Unassigned'); });
+    if (tasks.assignee !== 'all' && !seen.has(tasks.assignee)) tasks.assignee = 'all';
+    aSel.innerHTML = ['<option value="all">Everyone</option>']
+      .concat([...seen].map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`)).join('');
+    aSel.value = tasks.assignee;
+  }
+  const lSel = document.getElementById('bf-label');
+  if (lSel) {
+    const present = new Set();
+    tasks.rows.forEach((t) => (t.labels || []).forEach((k) => present.add(k)));
+    if (tasks.label !== 'all' && !present.has(tasks.label)) tasks.label = 'all';
+    lSel.innerHTML = ['<option value="all">Any label</option>']
+      .concat(Object.keys(CARD_LABELS).filter((k) => present.has(k)).map((k) => `<option value="${k}">${esc(CARD_LABELS[k].label)}</option>`)).join('');
+    lSel.value = tasks.label;
+  }
 }
 
 function renderBoard() {
   const board = document.getElementById('kanban');
   if (!board) return;
-  const rows = tasks.filter === 'mine' ? tasks.rows.filter((t) => t.assignee_id === me.id) : tasks.rows;
+  const rows = filteredRows();
   renderTaskStats(rows);
   const hint = {
     inbound: me.role === 'admin' ? 'Assign a task to get the ball rolling.' : 'Nothing assigned yet.',
@@ -2622,16 +2750,34 @@ function taskDueHTML(t) {
   return `<div class="kc-due${cls}">${icon('cal', 'ic sm')}<span>${esc(text)}</span></div>`;
 }
 
+// Small "3/5 checklist" + "2 comments" badges on the card face.
+function taskMetaHTML(t) {
+  const items = tasks.checklist[t.id] || [];
+  const comments = tasks.comments[t.id] || [];
+  const parts = [];
+  if (items.length) {
+    const done = items.filter((i) => i.done).length;
+    parts.push(`<span class="kc-meta-i${done === items.length ? ' done' : ''}" title="Checklist">${icon('check', 'ic sm')}${done}/${items.length}</span>`);
+  }
+  if (comments.length) {
+    parts.push(`<span class="kc-meta-i" title="Comments">${icon('comment', 'ic sm')}${comments.length}</span>`);
+  }
+  return parts.length ? `<div class="kc-meta">${parts.join('')}</div>` : '';
+}
+
 function boardCardHTML(t) {
   const meFlag = t.assignee_id === me.id;
   const canDrag = me.role === 'admin' || (meFlag && t.status !== 'completed');
   const expanded = expandedTasks.has(t.id);
+  const labels = labelPillsHTML(t.labels);
   return `
     <div class="kanban-card status-${t.status}${expanded ? ' expanded' : ''}" data-task="${esc(t.id)}" draggable="${canDrag ? 'true' : 'false'}">
+      ${labels ? `<div class="kc-labels">${labels}</div>` : ''}
       <div class="kc-main">
         <div class="kc-title">${esc(t.title)}</div>
         ${t.description ? `<div class="kc-desc">${esc(t.description)}</div>` : ''}
         ${taskDueHTML(t)}
+        ${taskMetaHTML(t)}
       </div>
       <div class="kc-foot">
         <div class="kc-assignee" title="${esc(t.assignee_name || 'Unassigned')}">
@@ -2701,26 +2847,95 @@ function wireBoard(board) {
         taskDragId = null;
         el.classList.remove('dragging');
         board.querySelectorAll('.kanban-col').forEach((c) => c.classList.remove('drop-target'));
+        // Reconcile the DOM with the data: if the drag ended without a valid
+        // drop, the live-preview move is undone; a successful drop already
+        // re-rendered, so this is a harmless repaint.
+        renderBoard();
       });
     }
   });
 
   board.querySelectorAll('.kanban-col').forEach((col) => {
+    const body = col.querySelector('.kcol-body');
     col.addEventListener('dragover', (e) => {
       const t = tasks.rows.find((x) => x.id === taskDragId);
       if (!t || !taskCanMove(t, col.dataset.status)) return; // not a valid drop target
       e.preventDefault();
       col.classList.add('drop-target');
+      // Live preview: slot the dragged card where it would land, so reordering
+      // within a column (and placing it across columns) has real-time feedback.
+      const dragging = board.querySelector('.kanban-card.dragging');
+      if (dragging && body) {
+        const before = dragAfterCard(body, e.clientY);
+        if (before == null) body.appendChild(dragging);
+        else if (before !== dragging) body.insertBefore(dragging, before);
+      }
     });
     col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('drop-target'); });
     col.addEventListener('drop', (e) => {
       e.preventDefault();
       col.classList.remove('drop-target');
-      const id = taskDragId || (e.dataTransfer ? e.dataTransfer.getData('text/plain') : null);
-      const t = tasks.rows.find((x) => x.id === id);
-      if (t) moveTask(t, col.dataset.status);
+      const t = tasks.rows.find((x) => x.id === taskDragId);
+      if (!t || !body) { renderBoard(); return; }
+      const order = [...body.querySelectorAll('.kanban-card')].map((el) => el.dataset.task);
+      dropTask(t, col.dataset.status, order);
     });
   });
+}
+
+// First card whose vertical midpoint is below the pointer => insert before it
+// (null means drop at the end). The card being dragged is ignored.
+function dragAfterCard(body, y) {
+  const els = [...body.querySelectorAll('.kanban-card:not(.dragging)')];
+  for (const el of els) {
+    const box = el.getBoundingClientRect();
+    if (y < box.top + box.height / 2) return el;
+  }
+  return null;
+}
+
+// Drop handler for drag-and-drop: may change a card's column (status) AND its
+// position. `order` is the final list of card ids in the destination column
+// (taken from the live-previewed DOM). We translate that into a sort_order that
+// lands the card between its new neighbors.
+async function dropTask(t, toStatus, order) {
+  const statusChanged = t.status !== toStatus;
+  if (statusChanged && !taskCanMove(t, toStatus)) {
+    toast(toStatus === 'completed' ? 'Only an admin can mark a task complete.' : "You can't move that task there.");
+    renderBoard();
+    return;
+  }
+  if (!statusChanged && !taskCanMove(t, t.status)) { renderBoard(); return; }
+
+  // Neighbors (excluding the dragged card), keyed by their current sort_order.
+  const orderOf = new Map(tasks.rows.filter((x) => x.id !== t.id).map((x) => [x.id, x.sort_order ?? 0]));
+  const pos = order.indexOf(t.id);
+  const aboveId = order[pos - 1];
+  const belowId = order[pos + 1];
+  const above = aboveId != null && orderOf.has(aboveId) ? orderOf.get(aboveId) : null;
+  const below = belowId != null && orderOf.has(belowId) ? orderOf.get(belowId) : null;
+  let newOrder;
+  if (above == null && below == null) newOrder = Date.now() / 1000;
+  else if (above == null) newOrder = below + 1;   // top of the column
+  else if (below == null) newOrder = above - 1;   // bottom of the column
+  else newOrder = (above + below) / 2;            // between two cards
+
+  const unchanged = !statusChanged && Math.abs((t.sort_order ?? 0) - newOrder) < 1e-9;
+  if (unchanged) { renderBoard(); return; }
+
+  const prev = { status: t.status, sort_order: t.sort_order, updated_at: t.updated_at, completed_at: t.completed_at, completed_by: t.completed_by };
+  const nowISO = new Date().toISOString();
+  const patch = { sort_order: newOrder, updated_at: nowISO };
+  if (statusChanged) {
+    patch.status = toStatus;
+    if (toStatus === 'completed') { patch.completed_at = nowISO; patch.completed_by = me.id; }
+    else { patch.completed_at = null; patch.completed_by = null; }
+  }
+  Object.assign(t, patch);
+  renderBoard();
+  const { error } = await boardCardsUpdate(t.id, patch);
+  if (error) { Object.assign(t, prev); renderBoard(); toast(error.message); return; }
+  if (statusChanged && toStatus === 'completed') toast('🎉 Task completed!');
 }
 
 async function moveTask(t, toStatus) {
@@ -2729,14 +2944,16 @@ async function moveTask(t, toStatus) {
     toast(toStatus === 'completed' ? 'Only an admin can mark a task complete.' : "You can't move that task there.");
     return;
   }
-  const prev = { status: t.status, updated_at: t.updated_at, completed_at: t.completed_at };
+  const prev = { status: t.status, sort_order: t.sort_order, updated_at: t.updated_at, completed_at: t.completed_at, completed_by: t.completed_by };
   const nowISO = new Date().toISOString();
-  const patch = { status: toStatus, updated_at: nowISO };
+  // Pop to the top of the destination column.
+  const top = Math.max(0, ...tasks.rows.filter((x) => x.status === toStatus && x.id !== t.id).map((x) => x.sort_order ?? 0)) + 1;
+  const patch = { status: toStatus, sort_order: top, updated_at: nowISO };
   if (toStatus === 'completed') { patch.completed_at = nowISO; patch.completed_by = me.id; }
   else { patch.completed_at = null; patch.completed_by = null; }
-  Object.assign(t, { status: toStatus, updated_at: nowISO, completed_at: patch.completed_at });
+  Object.assign(t, patch);
   renderBoard();
-  const { error } = await supabase.from('board_cards').update(patch).eq('id', t.id);
+  const { error } = await boardCardsUpdate(t.id, patch);
   if (error) { Object.assign(t, prev); renderBoard(); toast(error.message); return; }
   if (toStatus === 'completed') toast('🎉 Task completed!');
 }
@@ -2768,11 +2985,12 @@ async function openBoardModal(existing) {
   const isAdmin = me.role === 'admin';
   const users = isAdmin && editable ? await fetchApprovedUsers() : null;
   const curAssigneeId = existing ? existing.assignee_id : me.id;
+  const selLabels = new Set(existing && existing.labels ? existing.labels : []);
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
-    <div class="modal card pad">
+    <div class="modal card pad tk-modal">
       <div class="tk-head">
         <h2 style="margin:0;">${creating ? 'Assign a task' : editable ? 'Edit task' : 'Task'}</h2>
         ${existing ? `<span class="badge stage-${existing.status}">${TASK_LABEL[existing.status]}</span>` : ''}
@@ -2785,6 +3003,12 @@ async function openBoardModal(existing) {
       ${editable
         ? `<textarea id="tk-desc" rows="4" maxlength="2000" placeholder="Context, links, what 'done' looks like…">${esc(existing ? existing.description : '')}</textarea>`
         : `<div class="tk-readonly">${existing.description ? esc(existing.description) : '<span class="muted-mini">No details.</span>'}</div>`}
+      ${editable
+        ? `<label style="margin-top:14px;">Labels <span style="opacity:.7">(optional)</span></label>
+           <div class="tk-labels" id="tk-labels">
+             ${Object.entries(CARD_LABELS).map(([k, m]) => `<button type="button" class="lbl-pick${selLabels.has(k) ? ' on' : ''}" data-label="${k}" style="--lc:${m.color}">${esc(m.label)}</button>`).join('')}
+           </div>`
+        : (existing.labels && existing.labels.length ? `<label style="margin-top:14px;">Labels</label><div class="kc-labels in-modal">${labelPillsHTML(existing.labels)}</div>` : '')}
       ${isAdmin && editable && users ? `
         <label style="margin-top:14px;">Assignee</label>
         <select id="tk-assignee" class="form-select">
@@ -2795,6 +3019,9 @@ async function openBoardModal(existing) {
            <input id="tk-due" type="date" value="${existing && existing.due_date ? esc(existing.due_date) : ''}" />`
         : (existing.due_date ? `<label style="margin-top:14px;">Due date</label><div class="tk-readonly">${esc(fmtDate(existing.due_date))}</div>` : '')}
       ${existing && existing.status === 'completed' && existing.completed_at ? `<p class="muted-mini" style="margin:14px 0 0;">✓ Completed ${esc(fmtDate(existing.completed_at.slice(0, 10)))}.</p>` : ''}
+      ${existing
+        ? '<div id="tk-extras" class="tk-extras"></div>'
+        : '<p class="muted-mini" style="margin:16px 0 0;">A checklist and comments open up once the task is created.</p>'}
       <div id="tk-msg" class="msg"></div>
       <div class="modal-foot">
         ${existing && taskCanDelete(existing) ? '<button class="btn danger" id="tk-del" type="button" style="margin-right:auto;">Delete</button>' : ''}
@@ -2810,6 +3037,11 @@ async function openBoardModal(existing) {
   const titleEl = overlay.querySelector('#tk-title');
   if (titleEl) { titleEl.focus(); titleEl.select(); }
 
+  overlay.querySelectorAll('#tk-labels .lbl-pick').forEach((b) => {
+    b.onclick = () => b.classList.toggle('on');
+  });
+  if (existing) renderCardExtras(overlay, existing);
+
   const delBtn = overlay.querySelector('#tk-del');
   if (delBtn) delBtn.onclick = () => { close(); confirmDeleteTask(existing); };
 
@@ -2820,31 +3052,185 @@ async function openBoardModal(existing) {
     const description = overlay.querySelector('#tk-desc').value.trim();
     const dueEl = overlay.querySelector('#tk-due');
     const due_date = dueEl && dueEl.value ? dueEl.value : null;
+    const labels = [...overlay.querySelectorAll('#tk-labels .lbl-pick.on')].map((b) => b.dataset.label);
     const sel = overlay.querySelector('#tk-assignee');
     let assignee = (sel && users) ? users.find((u) => u.id === sel.value) : null;
     if (creating && !assignee) assignee = { id: me.id, full_name: me.full_name, email: me.email, avatar_url: me.avatar_url };
     saveBtn.disabled = true;
     let error;
     if (creating) {
-      ({ error } = await supabase.from('board_cards').insert({
-        title, description, status: 'inbound', due_date,
+      ({ error } = await boardCardsInsert({
+        title, description, status: 'inbound', due_date, labels,
+        sort_order: Date.now() / 1000,
         assignee_id: assignee.id,
         assignee_name: assignee.full_name || assignee.email || '',
         assignee_avatar: assignee.avatar_url || null,
         created_by: me.id,
       }));
     } else {
-      const patch = { title, description, due_date, updated_at: new Date().toISOString() };
+      const patch = { title, description, due_date, labels, updated_at: new Date().toISOString() };
       if (assignee) {
         patch.assignee_id = assignee.id;
         patch.assignee_name = assignee.full_name || assignee.email || '';
         patch.assignee_avatar = assignee.avatar_url || null;
       }
-      ({ error } = await supabase.from('board_cards').update(patch).eq('id', existing.id));
+      ({ error } = await boardCardsUpdate(existing.id, patch));
     }
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
     close(); toast(creating ? 'Task assigned' : 'Task saved'); loadBoard();
   };
+}
+
+// ---------------------------------------------------------------------------
+// Card extras: an interactive checklist + a comment thread inside the modal.
+// These persist on their own (no "Save" needed) so they work even when the
+// card body is read-only for the viewer (e.g. an assignee ticking items off).
+// ---------------------------------------------------------------------------
+function renderCardExtras(overlay, card) {
+  const host = overlay.querySelector('#tk-extras');
+  if (!host) return;
+  host.innerHTML = `
+    <div class="tk-section" id="tk-checklist"></div>
+    <div class="tk-section" id="tk-comments"></div>`;
+  renderChecklist(overlay, card);
+  renderComments(overlay, card);
+}
+
+function renderChecklist(overlay, card) {
+  const host = overlay.querySelector('#tk-checklist');
+  if (!host) return;
+  const isAdmin = me.role === 'admin';
+  const canToggle = isAdmin || card.assignee_id === me.id; // assignee ticks items off
+  const items = (tasks.checklist[card.id] || []).slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const done = items.filter((i) => i.done).length;
+  const pct = items.length ? Math.round((done / items.length) * 100) : 0;
+  host.innerHTML = `
+    <div class="tk-sec-head">
+      <h3>${icon('check', 'ic sm')} Checklist</h3>
+      ${items.length ? `<span class="tk-sec-prog">${done}/${items.length}</span>` : ''}
+    </div>
+    ${items.length ? `<div class="ck-bar"><span style="width:${pct}%"></span></div>` : ''}
+    <div class="ck-list">
+      ${items.length ? items.map((i) => `
+        <div class="ck-item${i.done ? ' done' : ''}" data-ck="${esc(i.id)}">
+          <button type="button" class="ck-box" data-ck-toggle ${canToggle ? '' : 'disabled'} aria-label="Toggle item">${i.done ? icon('check', 'ic sm') : ''}</button>
+          <span class="ck-text">${esc(i.text)}</span>
+          ${isAdmin ? `<button type="button" class="ck-del" data-ck-del title="Remove item">${icon('trash', 'ic sm')}</button>` : ''}
+        </div>`).join('') : `<div class="muted-mini">No checklist items${isAdmin ? ' yet — add the sub-steps below.' : '.'}</div>`}
+    </div>
+    ${isAdmin ? `
+      <div class="ck-add">
+        <input type="text" id="ck-new" maxlength="200" placeholder="Add a checklist item…" />
+        <button type="button" class="btn ghost sm" id="ck-add-btn">Add</button>
+      </div>` : ''}`;
+  host.querySelectorAll('.ck-item').forEach((row) => {
+    const item = items.find((x) => x.id === row.dataset.ck);
+    if (!item) return;
+    const tg = row.querySelector('[data-ck-toggle]');
+    if (tg && canToggle) tg.onclick = () => toggleChecklistItem(overlay, card, item);
+    const dl = row.querySelector('[data-ck-del]');
+    if (dl) dl.onclick = () => deleteChecklistItem(overlay, card, item);
+  });
+  const addBtn = host.querySelector('#ck-add-btn');
+  const addInput = host.querySelector('#ck-new');
+  if (addBtn && addInput) {
+    const add = () => { const v = addInput.value.trim(); if (v) addChecklistItem(overlay, card, v); };
+    addBtn.onclick = add;
+    addInput.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
+  }
+}
+
+async function toggleChecklistItem(overlay, card, item) {
+  const next = !item.done;
+  item.done = next; // optimistic
+  renderChecklist(overlay, card); renderBoard();
+  const { error } = await supabase.from('card_checklist_items').update({ done: next }).eq('id', item.id);
+  if (error) { item.done = !next; renderChecklist(overlay, card); renderBoard(); toast(error.message); }
+}
+
+async function addChecklistItem(overlay, card, text) {
+  const items = tasks.checklist[card.id] || (tasks.checklist[card.id] = []);
+  const maxOrder = items.reduce((m, i) => Math.max(m, i.sort_order ?? 0), 0);
+  const { data, error } = await supabase.from('card_checklist_items')
+    .insert({ card_id: card.id, text, sort_order: maxOrder + 1 })
+    .select('id, card_id, text, done, sort_order').single();
+  if (error) { toast(error.message); return; }
+  items.push(data);
+  renderChecklist(overlay, card); renderBoard();
+}
+
+async function deleteChecklistItem(overlay, card, item) {
+  const items = tasks.checklist[card.id] || [];
+  const { error } = await supabase.from('card_checklist_items').delete().eq('id', item.id);
+  if (error) { toast(error.message); return; }
+  const i = items.indexOf(item); if (i >= 0) items.splice(i, 1);
+  renderChecklist(overlay, card); renderBoard();
+}
+
+function renderComments(overlay, card) {
+  const host = overlay.querySelector('#tk-comments');
+  if (!host) return;
+  const list = (tasks.comments[card.id] || []).slice().sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+  host.innerHTML = `
+    <div class="tk-sec-head">
+      <h3>${icon('comment', 'ic sm')} Comments</h3>
+      ${list.length ? `<span class="tk-sec-prog">${list.length}</span>` : ''}
+    </div>
+    <div class="cm-list">
+      ${list.length ? list.map((c) => `
+        <div class="cm-item" data-cm="${esc(c.id)}">
+          ${avatarHTML(c.author_name || '?', c.author_id === me.id, 'sm', c.author_avatar)}
+          <div class="cm-body">
+            <div class="cm-meta"><span class="cm-who">${esc(shortName(c.author_name) || 'Someone')}</span><span class="cm-when">${esc(fmtWhen(c.created_at))}</span></div>
+            <div class="cm-text">${esc(c.body)}</div>
+          </div>
+          ${(c.author_id === me.id || me.role === 'admin') ? `<button type="button" class="cm-del" data-cm-del title="Delete comment">${icon('trash', 'ic sm')}</button>` : ''}
+        </div>`).join('') : '<div class="muted-mini">No comments yet — start the discussion.</div>'}
+    </div>
+    <div class="cm-add">
+      <textarea id="cm-new" rows="2" maxlength="2000" placeholder="Write a comment…"></textarea>
+      <button type="button" class="btn primary sm" id="cm-send">Comment</button>
+    </div>`;
+  host.querySelectorAll('.cm-item').forEach((row) => {
+    const c = list.find((x) => x.id === row.dataset.cm);
+    const dl = row.querySelector('[data-cm-del]');
+    if (dl && c) dl.onclick = () => deleteComment(overlay, card, c);
+  });
+  const send = host.querySelector('#cm-send');
+  const input = host.querySelector('#cm-new');
+  if (send && input) send.onclick = () => { const v = input.value.trim(); if (v) postComment(overlay, card, v, input, send); };
+}
+
+async function postComment(overlay, card, body, input, send) {
+  send.disabled = true; input.disabled = true;
+  const { data, error } = await supabase.from('card_comments').insert({
+    card_id: card.id, author_id: me.id,
+    author_name: me.full_name || me.email || '',
+    author_avatar: me.avatar_url || null, body,
+  }).select('id, card_id, author_id, author_name, author_avatar, body, created_at').single();
+  if (error) { send.disabled = false; input.disabled = false; toast(error.message); return; }
+  (tasks.comments[card.id] || (tasks.comments[card.id] = [])).push(data);
+  renderComments(overlay, card); renderBoard();
+}
+
+async function deleteComment(overlay, card, c) {
+  const list = tasks.comments[card.id] || [];
+  const { error } = await supabase.from('card_comments').delete().eq('id', c.id);
+  if (error) { toast(error.message); return; }
+  const i = list.indexOf(c); if (i >= 0) list.splice(i, 1);
+  renderComments(overlay, card); renderBoard();
+}
+
+// Friendly "2h ago" / "3d ago" timestamp for comments.
+function fmtWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 7 * 86400) return `${Math.floor(diff / 86400)}d ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 // Small reusable confirm dialog.
