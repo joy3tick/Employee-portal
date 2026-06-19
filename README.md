@@ -4,7 +4,8 @@ A simple internal portal for Redline employees:
 
 - **Self-service signup** — employees create an account in seconds.
 - **Admin approval** — new accounts sit in *pending* until an admin approves or denies them.
-- **Office-day scheduling** — approved employees mark which days they're in on a shared calendar and see who else is in. Drag across days (press-and-hold first on a phone) to book several at once.
+- **Office-day scheduling** — approved employees mark which days they're **in the office, working remote, on vacation, or off sick** on a shared calendar and see who else is around. In-office and remote days can carry working hours. Drag across days (press-and-hold first on a phone) to book several at once.
+- **Events & off-sites (admin)** — admins drop company **events, off-sites, holidays, and socials** onto the shared calendar (single- or multi-day, all-day or timed, with an optional location). Everyone sees them on the schedule and in the day panel.
 - **Tasks** — every employee has a Tasks tab showing work assigned to them, which they can move through *To do → In progress → Done*. Admins assign and manage tasks (title, details, assignee, priority, due date).
 - **Profile pictures** — everyone can upload their own photo; admins can set one for any employee.
 - **Per-employee insights (admin)** — open any user to see days this week/month/all-time, hours this month/all-time, and weekly averages, then add or edit the hours on any specific day.
@@ -31,7 +32,7 @@ Open the SQL editor, paste the contents of [`supabase/schema.sql`](supabase/sche
 
 This creates the tables, the auto-profile trigger (which makes **alexrogul@gmail.com** an admin automatically), the `avatars` storage bucket, and the security policies.
 
-> **Updating an existing project?** The schema is idempotent — whenever you pull new features (like profile pictures or admin insights), just paste and **Run** it again to add the new columns, the `avatars` bucket, and the new policies.
+> **Updating an existing project?** The schema is idempotent — whenever you pull new features (like profile pictures, admin insights, remote days, or company events), just paste and **Run** it again to add the new tables/columns, the `avatars` bucket, and the new policies.
 
 ### 2. Turn off email confirmation (recommended)
 So signup is instant (admin approval is the real gate anyway):

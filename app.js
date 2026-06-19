@@ -22,10 +22,21 @@ const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']; // Monday-first
 const DOW1 = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 const WD_PLURAL = ['Sundays','Mondays','Tuesdays','Wednesdays','Thursdays','Fridays','Saturdays'];
 
-const KIND_LABEL = { in: 'In office', vacation: 'On vacation', sick: 'Off sick' };
-const KIND_EMOJI = { in: '🏢', vacation: '🌴', sick: '🤒' };
-const KIND_RANK = { in: 0, vacation: 1, sick: 2 };
+const KIND_LABEL = { in: 'In office', remote: 'Working remote', vacation: 'On vacation', sick: 'Off sick' };
+const KIND_EMOJI = { in: '🏢', remote: '🏠', vacation: '🌴', sick: '🤒' };
+const KIND_RANK = { in: 0, remote: 1, vacation: 2, sick: 3 };
 const kindOf = (a) => a.kind || 'in';
+// 'in' and 'remote' are working days that carry start/end hours; the others don't.
+const hasHours = (k) => k === 'in' || k === 'remote';
+
+// Company events on the shared calendar (admin-managed). Each kind has a label + emoji.
+const EVENT_KIND = {
+  event:   { label: 'Event',    emoji: '📅' },
+  offsite: { label: 'Off-site', emoji: '✈️' },
+  holiday: { label: 'Holiday',  emoji: '🎉' },
+  social:  { label: 'Social',   emoji: '🍕' },
+};
+const eventKindOf = (e) => (EVENT_KIND[e.kind] ? e.kind : 'event');
 
 const esc = (s) =>
   String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
@@ -155,9 +166,9 @@ const fmtRange = (s, e) => `${fmt12(s)} – ${fmt12(e)}${isOvernight(s, e) ? ' <
 const fmtRangePlain = (s, e) => `${fmt12(s)} – ${fmt12(e)}${isOvernight(s, e) ? ' (next day)' : ''}`;
 const fmtCompactRange = (s, e) => `${fmtCompact(s)}–${fmtCompact(e)}`;
 
-// Hours worked for an in-office entry (overnight wraps to the next day).
+// Hours worked for an in-office or remote entry (overnight wraps to the next day).
 function entryHours(r) {
-  if (kindOf(r) !== 'in' || !r.start_time || !r.end_time) return 0;
+  if (!hasHours(kindOf(r)) || !r.start_time || !r.end_time) return 0;
   const [sh, sm] = hhmm(r.start_time).split(':').map(Number);
   const [eh, em] = hhmm(r.end_time).split(':').map(Number);
   let mins = (eh * 60 + em) - (sh * 60 + sm);
@@ -911,11 +922,11 @@ function renderUpcoming() {
   el.innerHTML = mine.map((r) => {
     const d = new Date(`${r.day}T00:00:00`);
     const k = kindOf(r);
-    const title = k === 'in' ? 'In office' : k === 'vacation' ? 'Vacation' : 'Sick day';
-    const sub = k === 'in'
+    const title = k === 'in' ? 'In office' : k === 'remote' ? 'Working remote' : k === 'vacation' ? 'Vacation' : 'Sick day';
+    const sub = hasHours(k)
       ? (r.start_time ? fmtRangePlain(r.start_time, r.end_time) : 'no hours set')
       : d.toLocaleDateString(undefined, { weekday: 'long' });
-    const pill = k === 'in' ? 'IN' : k === 'vacation' ? 'VACATION' : 'SICK';
+    const pill = k === 'in' ? 'IN' : k === 'remote' ? 'REMOTE' : k === 'vacation' ? 'VACATION' : 'SICK';
     return `
       <button class="up-row" data-day="${r.day}" type="button">
         <span class="up-date"><span class="up-num">${d.getDate()}</span><span class="up-mon">${MONTHS[d.getMonth()].slice(0, 3).toUpperCase()} ${d.getFullYear()}</span></span>
@@ -1016,6 +1027,8 @@ const sched = {
   cells: [],
   rows: [],
   byDay: new Map(),
+  events: [],
+  eventsByDay: new Map(),
   selectedDay: null,
   pendingSelect: null,
   selection: [],   // ISO days picked via drag (length > 1 => bulk mode)
@@ -1030,18 +1043,20 @@ function entrySort(a, b) {
   if (b.user_id === me.id) return 1;
   const ka = KIND_RANK[kindOf(a)], kb = KIND_RANK[kindOf(b)];
   if (ka !== kb) return ka - kb;
-  if (kindOf(a) === 'in') return hhmm(a.start_time).localeCompare(hhmm(b.start_time));
+  if (hasHours(kindOf(a))) return hhmm(a.start_time).localeCompare(hhmm(b.start_time));
   return (a.display_name || '').localeCompare(b.display_name || '');
 }
 
 function viewSchedule(view) {
   panelEditing = false;
+  const isAdmin = me.role === 'admin';
   view.innerHTML = `
     <div class="page-head">
       <div>
         <h1>Office schedule</h1>
-        <p class="subtitle" style="margin:2px 0 0;">Tap a day to mark yourself in, on vacation, or off sick — or drag across days (press &amp; hold first on a phone) to book several at once.</p>
+        <p class="subtitle" style="margin:2px 0 0;">Tap a day to mark yourself in, remote, on vacation, or off sick — or drag across days (press &amp; hold first on a phone) to book several at once.</p>
       </div>
+      ${isAdmin ? `<button class="btn primary" id="add-event" type="button">${icon('cal', 'ic sm')}<span>Add event</span></button>` : ''}
     </div>
     <div id="stats" class="stats"></div>
     <div class="cal-toolbar">
@@ -1061,6 +1076,8 @@ function viewSchedule(view) {
     </div>`;
   document.getElementById('prev').onclick = () => shiftMonth(-1);
   document.getElementById('next').onclick = () => shiftMonth(1);
+  const addEv = document.getElementById('add-event');
+  if (addEv) addEv.onclick = () => openEventModal(null, sched.selectedDay || TODAY);
   document.getElementById('today-btn').onclick = () => {
     const n = new Date();
     sched.view = { year: n.getFullYear(), month: n.getMonth() };
@@ -1182,6 +1199,37 @@ function indexRows() {
   sched.byDay = m;
 }
 
+// Company events overlapping the visible window [from, to].
+async function fetchEvents(from, to) {
+  const { data, error } = await supabase
+    .from('events')
+    .select('id, title, kind, starts_on, ends_on, start_time, end_time, location, notes')
+    .lte('starts_on', to)
+    .gte('ends_on', from)
+    .order('starts_on', { ascending: true })
+    .order('start_time', { ascending: true, nullsFirst: true });
+  if (error) throw error;
+  return data || [];
+}
+
+// Expand each (possibly multi-day) event onto every visible day it covers.
+function indexEvents() {
+  const m = new Map();
+  if (!sched.cells.length) { sched.eventsByDay = m; return; }
+  const firstIso = toISO(sched.cells[0]);
+  const lastIso = toISO(sched.cells[sched.cells.length - 1]);
+  for (const ev of sched.events) {
+    let d = ev.starts_on < firstIso ? firstIso : ev.starts_on;
+    const end = (ev.ends_on || ev.starts_on) > lastIso ? lastIso : (ev.ends_on || ev.starts_on);
+    while (d <= end) {
+      if (!m.has(d)) m.set(d, []);
+      m.get(d).push(ev);
+      d = addDaysISO(d, 1);
+    }
+  }
+  sched.eventsByDay = m;
+}
+
 function shiftMonth(delta) {
   let m = sched.view.month + delta;
   let y = sched.view.year;
@@ -1206,8 +1254,13 @@ async function loadSchedule() {
     if (grid) grid.innerHTML = `<div class="empty" style="grid-column:1/-1">Couldn't load schedule: ${esc(err.message)}</div>`;
     return;
   }
+  // Events are optional — if the table isn't there yet, the calendar still works.
+  let events = [];
+  try { events = await fetchEvents(from, to); } catch { events = []; }
   sched.rows = data;
+  sched.events = events;
   indexRows();
+  indexEvents();
 
   const todayInView = new Date().getFullYear() === sched.view.year && new Date().getMonth() === sched.view.month;
   sched.selectedDay = sched.pendingSelect || (todayInView ? TODAY : toISO(new Date(sched.view.year, sched.view.month, 1)));
@@ -1242,6 +1295,7 @@ function renderStats() {
   const myInMonth = monthRows.filter((r) => r.user_id === me.id && kindOf(r) === 'in').length;
   const todayAll = sched.byDay.get(TODAY) || [];
   const todayIn = todayAll.filter((a) => kindOf(a) === 'in');
+  const todayRemote = todayAll.filter((a) => kindOf(a) === 'remote').length;
   const todayVac = todayAll.filter((a) => kindOf(a) === 'vacation').length;
   const todaySick = todayAll.filter((a) => kindOf(a) === 'sick').length;
 
@@ -1254,9 +1308,13 @@ function renderStats() {
     todayIn.slice(0, 5).map((a) => avatarHTML(a.display_name, a.user_id === me.id, 'sm', a.avatar_url)).join('') +
     (todayIn.length > 5 ? `<span class="avatar sm more">+${todayIn.length - 5}</span>` : '');
   const outTotal = todayVac + todaySick;
+  const remoteNote = todayRemote ? `<span class="muted-mini" style="margin-left:8px;">+${todayRemote} remote</span>` : '';
+  const inSub = todayAvatars
+    ? `<div class="avatar-stack">${todayAvatars}</div>${remoteNote}`
+    : (todayRemote ? `<span class="muted-mini">${todayRemote} working remote</span>` : '<span class="muted-mini">No one yet — be the first</span>');
 
   el.innerHTML = `
-    ${statCard('In office today', todayIn.length, `<div class="avatar-stack">${todayAvatars || '<span class="muted-mini">No one yet — be the first</span>'}</div>`, 'today')}
+    ${statCard('In office today', todayIn.length, inSub, 'today')}
     ${statCard('Out today', outTotal, `<span class="muted-mini">${outTotal ? `${todayVac} on vacation · ${todaySick} sick` : 'everyone\'s in'}</span>`)}
     ${statCard('You this month', myInMonth, `<span class="muted-mini">in-office day${myInMonth === 1 ? '' : 's'}</span>`)}
     ${statCard('Most popular', bestWd >= 0 ? WD_PLURAL[bestWd] : '—', bestWd >= 0 ? `<span class="muted-mini">${bestN} in-office visit${bestN === 1 ? '' : 's'}</span>` : '<span class="muted-mini">no bookings yet</span>')}`;
@@ -1307,7 +1365,8 @@ function renderCalendar() {
       const label = meFlag ? 'You' : shortName(a.display_name);
       const dot = k === 'in'
         ? (meFlag ? 'var(--accent)' : personColor(a.display_name))
-        : (k === 'vacation' ? 'var(--vac)' : 'var(--amber)');
+        : k === 'remote' ? 'var(--remote)'
+        : k === 'vacation' ? 'var(--vac)' : 'var(--amber)';
       let body, tip;
       if (k === 'in') {
         const t = a.start_time ? `<span class="evt-t">${esc(fmtCompactRange(a.start_time, a.end_time))}</span> ` : '';
@@ -1315,16 +1374,27 @@ function renderCalendar() {
         tip = a.start_time ? `${a.display_name} · ${fmtRangePlain(a.start_time, a.end_time)}` : a.display_name;
       } else {
         body = `${KIND_EMOJI[k]} ${esc(label)}`;
-        tip = `${a.display_name} · ${KIND_LABEL[k]}`;
+        tip = `${a.display_name} · ${KIND_LABEL[k]}` +
+          (k === 'remote' && a.start_time ? ` · ${fmtRangePlain(a.start_time, a.end_time)}` : '');
       }
       const dim = matchesSearch(a) ? '' : ' dim';
       return `<span class="evt ${k}${meFlag ? ' me' : ''}${dim}" title="${esc(tip)}"><span class="dot" style="background:${dot}"></span><span class="evt-body">${body}</span></span>`;
     }).join('');
     const more = list.length > 3 ? `<span class="evt more"><span class="evt-body">+${list.length - 3}</span></span>` : '';
 
+    // Company events sit above the people, with a distinct banner style.
+    const dayEvents = sched.eventsByDay.get(iso) || [];
+    const evChips = dayEvents.map((ev) => {
+      const ek = eventKindOf(ev);
+      const tip = `${EVENT_KIND[ek].label}: ${ev.title}` +
+        (ev.start_time ? ` · ${fmtRangePlain(ev.start_time, ev.end_time)}` : '') +
+        (ev.location ? ` · ${ev.location}` : '');
+      return `<span class="evt ev-${ek} is-event" title="${esc(tip)}"><span class="evt-body">${EVENT_KIND[ek].emoji} ${esc(ev.title)}</span></span>`;
+    }).join('');
+
     cell.innerHTML = `
       <div class="cell-top"><span class="num">${d.getDate()}</span></div>
-      <div class="evts">${chips}${more}</div>`;
+      <div class="evts">${evChips}${chips}${more}</div>`;
     grid.appendChild(cell);
   }
 }
@@ -1342,6 +1412,30 @@ function selectDay(iso) {
   sched.selectedDay = iso;
   renderCalendar();
   renderPanel();
+}
+
+// Events block shown at the top of the day panel. Everyone sees the events;
+// admins get an edit pencil on each and a "+ Add" affordance.
+function eventsPanelHTML(iso) {
+  const isAdmin = me.role === 'admin';
+  const dayEvents = sched.eventsByDay.get(iso) || [];
+  if (!dayEvents.length && !isAdmin) return '';
+  const rows = dayEvents.map((ev) => {
+    const ek = eventKindOf(ev);
+    const when = ev.start_time ? fmtRangePlain(ev.start_time, ev.end_time) : 'All day';
+    const multi = ev.ends_on && ev.ends_on !== ev.starts_on;
+    const meta = [when, ev.location].filter(Boolean).join(' · ') + (multi ? ` · thru ${fmtDate(ev.ends_on)}` : '');
+    return `<button class="ev-row ev-${ek}" type="button"${isAdmin ? ` data-edit-event="${esc(ev.id)}"` : ' disabled'}>
+        <span class="ev-emoji">${EVENT_KIND[ek].emoji}</span>
+        <span class="ev-row-text"><span class="ev-title">${esc(ev.title)}</span><span class="ev-meta">${esc(meta)}</span></span>
+        ${isAdmin ? `<span class="ev-edit">${icon('edit', 'ic sm')}</span>` : ''}
+      </button>`;
+  }).join('');
+  return `
+    <div class="ev-section">
+      <div class="ev-section-head"><span>Events</span>${isAdmin ? '<button class="link-btn" id="panel-add-event" type="button">+ Add</button>' : ''}</div>
+      ${dayEvents.length ? rows : '<div class="empty" style="padding:6px 2px;">Nothing scheduled — add an event.</div>'}
+    </div>`;
 }
 
 function renderPanel() {
@@ -1367,6 +1461,9 @@ function renderPanel() {
           detail = a.start_time
             ? `<span class="att-hours">${esc(fmtRangePlain(a.start_time, a.end_time))}</span>`
             : '<span class="att-hours muted-mini">no hours set</span>';
+        } else if (k === 'remote') {
+          detail = `<span class="att-tag remote">${KIND_EMOJI.remote} Remote</span>` +
+            (a.start_time ? `<span class="att-hours">${esc(fmtRangePlain(a.start_time, a.end_time))}</span>` : '');
         } else {
           detail = `<span class="att-tag ${k}">${KIND_EMOJI[k]} ${KIND_LABEL[k]}</span>`;
         }
@@ -1386,10 +1483,11 @@ function renderPanel() {
       <div class="entry-form">
         <div class="kind-select">
           <button type="button" class="kind-opt${curKind === 'in' ? ' active' : ''}" data-kind="in">🏢 In</button>
+          <button type="button" class="kind-opt${curKind === 'remote' ? ' active' : ''}" data-kind="remote">🏠 Remote</button>
           <button type="button" class="kind-opt${curKind === 'vacation' ? ' active' : ''}" data-kind="vacation">🌴 Vacation</button>
           <button type="button" class="kind-opt${curKind === 'sick' ? ' active' : ''}" data-kind="sick">🤒 Sick</button>
         </div>
-        <div class="hours-wrap"${curKind === 'in' ? '' : ' style="display:none"'}>
+        <div class="hours-wrap"${hasHours(curKind) ? '' : ' style="display:none"'}>
           <div class="hours-row">
             <div><label>From</label><input type="time" id="h-start" value="${ds}"></div>
             <div><label>To</label><input type="time" id="h-end" value="${de}"></div>
@@ -1411,6 +1509,8 @@ function renderPanel() {
     const k = kindOf(myRow);
     const summary = k === 'in'
       ? `You're in <strong>${fmtRange(myRow.start_time, myRow.end_time)}</strong>`
+      : k === 'remote'
+      ? `${KIND_EMOJI.remote} You're <strong>working remote</strong>${myRow.start_time ? ` <span class="muted-mini">· ${fmtRangePlain(myRow.start_time, myRow.end_time)}</span>` : ''}`
       : `${KIND_EMOJI[k]} You're <strong>${k === 'vacation' ? 'on vacation' : 'off sick'}</strong>`;
     actionHTML = `
       <div class="your-booking">
@@ -1431,6 +1531,7 @@ function renderPanel() {
         </div>
         <div class="panel-count"><span class="big">${inCount}</span><span class="muted-mini">in office${outCount ? ` · ${outCount} out` : ''}</span></div>
       </div>
+      ${eventsPanelHTML(iso)}
       ${actionHTML}
       <div class="att-list">${attendeeHTML}</div>
     </div>`;
@@ -1440,7 +1541,7 @@ function renderPanel() {
       panel.querySelectorAll('.kind-opt').forEach((x) => x.classList.remove('active'));
       b.classList.add('active');
       const hw = panel.querySelector('.hours-wrap');
-      if (hw) hw.style.display = b.dataset.kind === 'in' ? '' : 'none';
+      if (hw) hw.style.display = hasHours(b.dataset.kind) ? '' : 'none';
     };
   });
   panel.querySelectorAll('.chip-btn').forEach((b) => {
@@ -1454,12 +1555,12 @@ function renderPanel() {
   if (saveBtn) saveBtn.onclick = () => {
     const kind = panel.querySelector('.kind-opt.active').dataset.kind;
     const msg = panel.querySelector('#h-msg');
-    if (kind === 'in') {
+    if (hasHours(kind)) {
       const s = panel.querySelector('#h-start').value;
       const e = panel.querySelector('#h-end').value;
       if (!s || !e) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
       if (s === e) { msg.textContent = "Start and end times can't be the same."; msg.className = 'msg show error'; return; }
-      saveEntry(iso, 'in', s, e);
+      saveEntry(iso, kind, s, e);
     } else {
       saveEntry(iso, kind, null, null);
     }
@@ -1470,6 +1571,15 @@ function renderPanel() {
   if (editBtn) editBtn.onclick = () => { panelEditing = true; renderPanel(); };
   const rmBtn = panel.querySelector('#remove-me');
   if (rmBtn) rmBtn.onclick = () => removeMe(iso);
+
+  const addEvBtn = panel.querySelector('#panel-add-event');
+  if (addEvBtn) addEvBtn.onclick = () => openEventModal(null, iso);
+  panel.querySelectorAll('[data-edit-event]').forEach((b) => {
+    b.onclick = () => {
+      const ev = sched.events.find((x) => x.id === b.dataset.editEvent);
+      if (ev) openEventModal(ev, iso);
+    };
+  });
 }
 
 // Bulk scheduler shown when more than one day is selected via drag.
@@ -1495,6 +1605,7 @@ function renderBulkPanel(panel) {
       <div class="entry-form">
         <div class="kind-select">
           <button type="button" class="kind-opt active" data-kind="in">🏢 In</button>
+          <button type="button" class="kind-opt" data-kind="remote">🏠 Remote</button>
           <button type="button" class="kind-opt" data-kind="vacation">🌴 Vacation</button>
           <button type="button" class="kind-opt" data-kind="sick">🤒 Sick</button>
         </div>
@@ -1523,7 +1634,7 @@ function renderBulkPanel(panel) {
       panel.querySelectorAll('.kind-opt').forEach((x) => x.classList.remove('active'));
       b.classList.add('active');
       const hw = panel.querySelector('.hours-wrap');
-      if (hw) hw.style.display = b.dataset.kind === 'in' ? '' : 'none';
+      if (hw) hw.style.display = hasHours(b.dataset.kind) ? '' : 'none';
     };
   });
   panel.querySelectorAll('.chip-btn').forEach((b) => {
@@ -1537,7 +1648,7 @@ function renderBulkPanel(panel) {
   panel.querySelector('#bulk-save').onclick = () => {
     const kind = panel.querySelector('.kind-opt.active').dataset.kind;
     const msg = panel.querySelector('#h-msg');
-    if (kind === 'in') {
+    if (hasHours(kind)) {
       const s = panel.querySelector('#h-start').value;
       const e = panel.querySelector('#h-end').value;
       if (!s || !e) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
@@ -1568,8 +1679,8 @@ async function bulkSave(kind, start, end) {
     display_name: me.full_name || me.email,
     avatar_url: me.avatar_url || null,
     kind,
-    start_time: kind === 'in' ? start : null,
-    end_time: kind === 'in' ? end : null,
+    start_time: hasHours(kind) ? start : null,
+    end_time: hasHours(kind) ? end : null,
   }));
   const daySet = new Set(days);
   const snapshot = sched.rows;
@@ -1622,8 +1733,8 @@ async function saveEntry(iso, kind, start, end) {
     display_name: me.full_name || me.email,
     avatar_url: me.avatar_url || null,
     kind,
-    start_time: kind === 'in' ? start : null,
-    end_time: kind === 'in' ? end : null,
+    start_time: hasHours(kind) ? start : null,
+    end_time: hasHours(kind) ? end : null,
   };
   const snapshot = sched.rows;
   sched.rows = wasMine
@@ -1843,13 +1954,13 @@ function renderTeamDetail(view, p, days, revs) {
         const d = new Date(`${r.day}T00:00:00`);
         const k = kindOf(r);
         const when = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-        const detail = k === 'in'
+        const detail = hasHours(k)
           ? (r.start_time ? `${fmtRangePlain(r.start_time, r.end_time)} · ${fmtHours(entryHours(r))}` : 'no hours set')
           : KIND_LABEL[k];
         return `
           <div class="sched-row${r.day < TODAY ? ' past' : ''}">
             <div class="sched-when">
-              <span class="pill ${k}">${k === 'in' ? 'IN' : k === 'vacation' ? 'VAC' : 'SICK'}</span>
+              <span class="pill ${k}">${k === 'in' ? 'IN' : k === 'remote' ? 'REMOTE' : k === 'vacation' ? 'VAC' : 'SICK'}</span>
               <div><div class="sched-date">${when}</div><div class="muted-mini">${esc(detail)}</div></div>
             </div>
             <div class="actions">
@@ -1957,10 +2068,11 @@ function openAdminEntryModal(profile, row) {
       <input type="date" id="ae-date" value="${dayVal}"${editing ? ' disabled' : ''} />
       <div class="kind-select" style="margin-top:14px;">
         <button type="button" class="kind-opt${kind === 'in' ? ' active' : ''}" data-kind="in">🏢 In</button>
+        <button type="button" class="kind-opt${kind === 'remote' ? ' active' : ''}" data-kind="remote">🏠 Remote</button>
         <button type="button" class="kind-opt${kind === 'vacation' ? ' active' : ''}" data-kind="vacation">🌴 Vacation</button>
         <button type="button" class="kind-opt${kind === 'sick' ? ' active' : ''}" data-kind="sick">🤒 Sick</button>
       </div>
-      <div class="hours-wrap"${kind === 'in' ? '' : ' style="display:none"'}>
+      <div class="hours-wrap"${hasHours(kind) ? '' : ' style="display:none"'}>
         <div class="hours-row">
           <div><label>From</label><input type="time" id="ae-start" value="${s}"></div>
           <div><label>To</label><input type="time" id="ae-end" value="${e}"></div>
@@ -1988,7 +2100,7 @@ function openAdminEntryModal(profile, row) {
     b.onclick = () => {
       overlay.querySelectorAll('.kind-opt').forEach((x) => x.classList.remove('active'));
       b.classList.add('active');
-      overlay.querySelector('.hours-wrap').style.display = b.dataset.kind === 'in' ? '' : 'none';
+      overlay.querySelector('.hours-wrap').style.display = hasHours(b.dataset.kind) ? '' : 'none';
     };
   });
   overlay.querySelectorAll('.chip-btn').forEach((b) => {
@@ -2012,7 +2124,7 @@ function openAdminEntryModal(profile, row) {
     if (!day) { msg.textContent = 'Please choose a date.'; msg.className = 'msg show error'; return; }
     const k = overlay.querySelector('.kind-opt.active').dataset.kind;
     let st = null, en = null;
-    if (k === 'in') {
+    if (hasHours(k)) {
       st = overlay.querySelector('#ae-start').value;
       en = overlay.querySelector('#ae-end').value;
       if (!st || !en) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
@@ -2029,6 +2141,123 @@ function openAdminEntryModal(profile, row) {
     const { error } = await supabase.from('office_days').upsert(payload, { onConflict: 'user_id,day' });
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
     close(); toast('Saved'); refreshTeam();
+  };
+}
+
+// ===========================================================================
+// Company events / off-sites (admin) — drop them onto the shared calendar
+// ===========================================================================
+// Create or edit an event. `existing` is the event row (edit) or null (new);
+// dayISO seeds the date for a brand-new event.
+function openEventModal(existing, dayISO) {
+  if (me.role !== 'admin') return;
+  let kind = existing ? eventKindOf(existing) : 'event';
+  const startsOn = existing ? existing.starts_on : (dayISO || TODAY);
+  const endsOn = existing ? (existing.ends_on || existing.starts_on) : (dayISO || TODAY);
+  const timed = !!(existing && existing.start_time);
+  const st = existing && existing.start_time ? hhmm(existing.start_time) : '09:00';
+  const en = existing && existing.end_time ? hhmm(existing.end_time) : '17:00';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal card pad">
+      <h2 style="margin-bottom:4px;">${existing ? 'Edit event' : 'Add event'}</h2>
+      <p class="subtitle" style="margin-bottom:16px;">It shows on everyone's schedule.</p>
+      <label>Title</label>
+      <input type="text" id="ev-title" maxlength="120" placeholder="Q3 Off-site, All-hands, Holiday party…" value="${esc(existing ? existing.title : '')}" />
+      <label style="margin-top:14px;">Type</label>
+      <div class="kind-select ev-kind-select">
+        ${Object.entries(EVENT_KIND).map(([key, v]) =>
+          `<button type="button" class="kind-opt ev-opt${kind === key ? ' active' : ''}" data-evkind="${key}">${v.emoji} ${v.label}</button>`).join('')}
+      </div>
+      <div class="hours-row" style="margin-top:14px;">
+        <div><label>Starts</label><input type="date" id="ev-start" value="${startsOn}"></div>
+        <div><label>Ends</label><input type="date" id="ev-end" value="${endsOn}"></div>
+      </div>
+      <label class="ev-allday"><input type="checkbox" id="ev-allday"${timed ? '' : ' checked'} /> <span>All day (no set time)</span></label>
+      <div class="hours-wrap" id="ev-times"${timed ? '' : ' style="display:none"'}>
+        <div class="hours-row">
+          <div><label>From</label><input type="time" id="ev-stime" value="${st}"></div>
+          <div><label>To</label><input type="time" id="ev-etime" value="${en}"></div>
+        </div>
+      </div>
+      <label style="margin-top:14px;">Location <span class="muted-mini">(optional)</span></label>
+      <input type="text" id="ev-loc" maxlength="160" placeholder="HQ, Zoom, Lisbon…" value="${esc(existing ? existing.location : '')}" />
+      <label style="margin-top:14px;">Notes <span class="muted-mini">(optional)</span></label>
+      <textarea id="ev-notes" rows="2" maxlength="1000" placeholder="Agenda, who's invited, travel info…">${esc(existing ? existing.notes : '')}</textarea>
+      <div id="ev-msg" class="msg"></div>
+      <div class="modal-foot">
+        ${existing ? '<button class="btn danger" id="ev-remove" type="button" style="margin-right:auto;">Delete</button>' : ''}
+        <button class="btn ghost" id="ev-cancel" type="button">Cancel</button>
+        <button class="btn primary" id="ev-save" type="button">${existing ? 'Save' : 'Add event'}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  const msg = overlay.querySelector('#ev-msg');
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('#ev-cancel').onclick = close;
+  overlay.querySelector('#ev-title').focus();
+
+  overlay.querySelectorAll('[data-evkind]').forEach((b) => {
+    b.onclick = () => {
+      kind = b.dataset.evkind;
+      overlay.querySelectorAll('[data-evkind]').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+    };
+  });
+
+  const allday = overlay.querySelector('#ev-allday');
+  const times = overlay.querySelector('#ev-times');
+  allday.onchange = () => { times.style.display = allday.checked ? 'none' : ''; };
+
+  // Keep the end date from drifting before the start date.
+  const startEl = overlay.querySelector('#ev-start');
+  const endEl = overlay.querySelector('#ev-end');
+  startEl.onchange = () => { if (endEl.value && endEl.value < startEl.value) endEl.value = startEl.value; };
+
+  const refresh = () => {
+    if (ui.view !== 'schedule') return;
+    sched.pendingSelect = sched.selectedDay; // keep the panel on the day we were viewing
+    loadSchedule();
+  };
+
+  const rm = overlay.querySelector('#ev-remove');
+  if (rm) rm.onclick = async () => {
+    rm.disabled = true;
+    const { error } = await supabase.from('events').delete().eq('id', existing.id);
+    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; rm.disabled = false; return; }
+    close(); toast('Event deleted'); refresh();
+  };
+
+  overlay.querySelector('#ev-save').onclick = async () => {
+    const title = overlay.querySelector('#ev-title').value.trim();
+    if (!title) { msg.textContent = 'Please give the event a title.'; msg.className = 'msg show error'; return; }
+    const starts = startEl.value;
+    if (!starts) { msg.textContent = 'Please choose a start date.'; msg.className = 'msg show error'; return; }
+    let ends = endEl.value || starts;
+    if (ends < starts) ends = starts;
+    let stime = null, etime = null;
+    if (!allday.checked) {
+      stime = overlay.querySelector('#ev-stime').value;
+      etime = overlay.querySelector('#ev-etime').value;
+      if (!stime || !etime) { msg.textContent = 'Set a start and end time, or tick All day.'; msg.className = 'msg show error'; return; }
+    }
+    const payload = {
+      title, kind, starts_on: starts, ends_on: ends,
+      start_time: stime, end_time: etime,
+      location: overlay.querySelector('#ev-loc').value.trim(),
+      notes: overlay.querySelector('#ev-notes').value.trim(),
+      created_by: me.id, updated_at: new Date().toISOString(),
+    };
+    const saveBtn = overlay.querySelector('#ev-save');
+    saveBtn.disabled = true;
+    let error;
+    if (existing) ({ error } = await supabase.from('events').update(payload).eq('id', existing.id));
+    else ({ error } = await supabase.from('events').insert(payload));
+    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
+    close(); toast(existing ? 'Event saved' : 'Event added'); refresh();
   };
 }
 

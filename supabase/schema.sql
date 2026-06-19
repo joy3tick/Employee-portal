@@ -41,11 +41,17 @@ alter table public.office_days add column if not exists display_name text not nu
 -- end <= start means an overnight shift into the next day).
 alter table public.office_days add column if not exists start_time time;
 alter table public.office_days add column if not exists end_time   time;
--- Whether the person is in the office, on vacation, or off sick that day.
--- (start_time/end_time only apply when kind = 'in'.)
+-- Whether the person is in the office, working remote, on vacation, or off sick
+-- that day. (start_time/end_time apply when kind = 'in' or 'remote' — both are
+-- working days; they're ignored for vacation/sick.)
 alter table public.office_days
   add column if not exists kind text not null default 'in'
-  check (kind in ('in', 'vacation', 'sick'));
+  check (kind in ('in', 'remote', 'vacation', 'sick'));
+-- Widen the check for tables created before 'remote' existed (the add-column
+-- check above only takes effect the first time the column is created).
+alter table public.office_days drop constraint if exists office_days_kind_check;
+alter table public.office_days
+  add constraint office_days_kind_check check (kind in ('in', 'remote', 'vacation', 'sick'));
 
 create index if not exists office_days_day_idx     on public.office_days (day);
 create index if not exists office_days_user_id_idx on public.office_days (user_id);
@@ -308,3 +314,36 @@ drop trigger if exists protect_task_columns on public.tasks;
 create trigger protect_task_columns
   before update on public.tasks
   for each row execute function public.protect_task_columns();
+
+-- ---------------------------------------------------------------------------
+-- Company events / off-sites (admin-managed, everyone sees them)
+-- ---------------------------------------------------------------------------
+-- Admins drop events, off-sites, holidays, and socials onto the shared
+-- calendar. They can span multiple days (ends_on) and optionally have a time
+-- window; leaving the times empty makes it an all-day event.
+create table if not exists public.events (
+  id          uuid primary key default gen_random_uuid(),
+  title       text not null,
+  kind        text not null default 'event' check (kind in ('event', 'offsite', 'holiday', 'social')),
+  starts_on   date not null,
+  ends_on     date not null,              -- = starts_on for a single-day event
+  start_time  time,                       -- null/null => all-day
+  end_time    time,
+  location    text not null default '',
+  notes       text not null default '',
+  created_by  uuid references public.profiles (id) on delete set null,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists events_starts_idx on public.events (starts_on);
+create index if not exists events_ends_idx   on public.events (ends_on);
+
+alter table public.events enable row level security;
+
+-- Every approved user can read events; only admins can create/edit/delete them.
+drop policy if exists events_select_approved on public.events;
+drop policy if exists events_admin_all       on public.events;
+create policy events_select_approved on public.events for select
+  using (public.is_approved());
+create policy events_admin_all on public.events for all
+  using (public.is_admin()) with check (public.is_admin());
