@@ -41,11 +41,17 @@ alter table public.office_days add column if not exists display_name text not nu
 -- end <= start means an overnight shift into the next day).
 alter table public.office_days add column if not exists start_time time;
 alter table public.office_days add column if not exists end_time   time;
--- Whether the person is in the office, on vacation, or off sick that day.
--- (start_time/end_time only apply when kind = 'in'.)
+-- Whether the person is in the office, working remote, on vacation, or off sick
+-- that day. (start_time/end_time apply when kind = 'in' or 'remote' — both are
+-- working days; they're ignored for vacation/sick.)
 alter table public.office_days
   add column if not exists kind text not null default 'in'
-  check (kind in ('in', 'vacation', 'sick'));
+  check (kind in ('in', 'remote', 'vacation', 'sick'));
+-- Widen the check for tables created before 'remote' existed (the add-column
+-- check above only takes effect the first time the column is created).
+alter table public.office_days drop constraint if exists office_days_kind_check;
+alter table public.office_days
+  add constraint office_days_kind_check check (kind in ('in', 'remote', 'vacation', 'sick'));
 
 create index if not exists office_days_day_idx     on public.office_days (day);
 create index if not exists office_days_user_id_idx on public.office_days (user_id);
@@ -240,8 +246,8 @@ create policy weekly_reviews_select_own on public.weekly_reviews for select
 -- ---------------------------------------------------------------------------
 -- Task board (Trello-style Kanban) — everyone
 -- ---------------------------------------------------------------------------
--- Stored in its OWN table (board_cards) so it never collides with any other
--- "tasks" feature/table — this board is fully self-contained.
+-- Stored in its OWN table (board_cards) so it never collides with the assigned
+-- "tasks" feature below — this board is fully self-contained.
 --
 -- Cards flow through four columns: inbound -> in_progress -> awaiting_review
 -- -> completed. The whole approved team can see the board. An employee moves
@@ -288,10 +294,9 @@ create policy board_cards_insert on public.board_cards for insert with check (
 );
 
 -- The assignee can update their own card ONLY while it isn't completed, and may
--- never set it to completed (USING freezes completed cards; WITH CHECK blocks the
--- completed status). A BEFORE UPDATE trigger (below) further freezes every column
--- except status for non-admins, so an employee can MOVE a card but can't edit its
--- title / details / due date / assignee — only an admin can.
+-- never set it to completed. A BEFORE UPDATE trigger (below) further freezes
+-- every column except status for non-admins, so an employee can MOVE a card but
+-- can't edit its title / details / due date / assignee — only an admin can.
 drop policy if exists board_cards_update_assignee on public.board_cards;
 create policy board_cards_update_assignee on public.board_cards for update
   using (assignee_id = auth.uid() and status <> 'completed')
@@ -310,9 +315,7 @@ create policy board_cards_delete on public.board_cards for delete using (
 );
 
 -- Only admins edit a card's content. This BEFORE UPDATE trigger freezes every
--- column except status for non-admins, so the assignee can move a card through
--- the columns but can't change its title, details, due date, or assignee.
--- (Mirrors protect_profile_columns above.)
+-- column except status for non-admins (mirrors protect_profile_columns above).
 create or replace function public.protect_board_card_columns()
 returns trigger
 language plpgsql
@@ -340,3 +343,108 @@ drop trigger if exists protect_board_card_columns on public.board_cards;
 create trigger protect_board_card_columns
   before update on public.board_cards
   for each row execute function public.protect_board_card_columns();
+
+-- ---------------------------------------------------------------------------
+-- Tasks — admins assign work to employees; employees see & progress their own
+-- ---------------------------------------------------------------------------
+-- assignee_name / assigned_by_name / assignee_avatar are denormalized so an
+-- employee (who can't read other people's profile rows) can still see who
+-- assigned the task, and admins can list assignees without extra joins.
+create table if not exists public.tasks (
+  id               uuid primary key default gen_random_uuid(),
+  title            text not null,
+  description      text not null default '',
+  assignee_id      uuid not null references public.profiles (id) on delete cascade,
+  assignee_name    text not null default '',
+  assignee_avatar  text,
+  assigned_by      uuid references public.profiles (id) on delete set null,
+  assigned_by_name text not null default '',
+  status           text not null default 'todo'   check (status in ('todo', 'in_progress', 'done')),
+  priority         text not null default 'normal' check (priority in ('low', 'normal', 'high')),
+  due_date         date,
+  scheduled_for    date,           -- if set, the assignee only sees it from this day on
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+-- In case an older tasks table already exists without the "show on" date:
+alter table public.tasks add column if not exists scheduled_for date;
+create index if not exists tasks_assignee_idx  on public.tasks (assignee_id);
+create index if not exists tasks_status_idx    on public.tasks (status);
+create index if not exists tasks_scheduled_idx on public.tasks (scheduled_for);
+
+alter table public.tasks enable row level security;
+
+-- Admins can do everything; employees can read their own tasks and update only
+-- the status (a trigger freezes every other column for non-admins).
+drop policy if exists tasks_admin_all  on public.tasks;
+drop policy if exists tasks_select_own on public.tasks;
+drop policy if exists tasks_update_own on public.tasks;
+create policy tasks_admin_all on public.tasks for all
+  using (public.is_admin()) with check (public.is_admin());
+-- A scheduled task stays hidden from the employee until its "show on" day.
+create policy tasks_select_own on public.tasks for select
+  using (assignee_id = auth.uid() and (scheduled_for is null or scheduled_for <= current_date));
+create policy tasks_update_own on public.tasks for update
+  using (assignee_id = auth.uid()) with check (assignee_id = auth.uid());
+
+create or replace function public.protect_task_columns()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    new.title            := old.title;
+    new.description      := old.description;
+    new.assignee_id      := old.assignee_id;
+    new.assignee_name    := old.assignee_name;
+    new.assignee_avatar  := old.assignee_avatar;
+    new.assigned_by      := old.assigned_by;
+    new.assigned_by_name := old.assigned_by_name;
+    new.priority         := old.priority;
+    new.due_date         := old.due_date;
+    new.scheduled_for    := old.scheduled_for;
+  end if;
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_task_columns on public.tasks;
+create trigger protect_task_columns
+  before update on public.tasks
+  for each row execute function public.protect_task_columns();
+
+-- ---------------------------------------------------------------------------
+-- Company events / off-sites (admin-managed, everyone sees them)
+-- ---------------------------------------------------------------------------
+-- Admins drop events, off-sites, holidays, and socials onto the shared
+-- calendar. They can span multiple days (ends_on) and optionally have a time
+-- window; leaving the times empty makes it an all-day event.
+create table if not exists public.events (
+  id          uuid primary key default gen_random_uuid(),
+  title       text not null,
+  kind        text not null default 'event' check (kind in ('event', 'offsite', 'holiday', 'social')),
+  starts_on   date not null,
+  ends_on     date not null,              -- = starts_on for a single-day event
+  start_time  time,                       -- null/null => all-day
+  end_time    time,
+  location    text not null default '',
+  notes       text not null default '',
+  created_by  uuid references public.profiles (id) on delete set null,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists events_starts_idx on public.events (starts_on);
+create index if not exists events_ends_idx   on public.events (ends_on);
+
+alter table public.events enable row level security;
+
+-- Every approved user can read events; only admins can create/edit/delete them.
+drop policy if exists events_select_approved on public.events;
+drop policy if exists events_admin_all       on public.events;
+create policy events_select_approved on public.events for select
+  using (public.is_approved());
+create policy events_admin_all on public.events for all
+  using (public.is_admin()) with check (public.is_admin());
