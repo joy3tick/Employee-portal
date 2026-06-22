@@ -272,7 +272,7 @@ let attachBusyCard = null; // id of the card whose attachments are mid-upload
 const expandedTasks = new Set(); // ids of cards expanded inline on the board
 const ATTACH_BUCKET = 'card-attachments';
 const ATTACH_MAX = 10;                 // max attachments per card
-const ATTACH_MAX_MB = 100;             // max size per file (MB)
+const ATTACH_MAX_MB = 50;              // max size per file (MB)
 const ATTACH_MAX_BYTES = ATTACH_MAX_MB * 1024 * 1024;
 
 async function fetchProfile(userId) {
