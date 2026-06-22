@@ -104,6 +104,67 @@ create policy card_comments_insert on public.card_comments for insert
 create policy card_comments_delete on public.card_comments for delete
   using (author_id = auth.uid() or public.is_admin());
 
+-- 4) Attachments — files on a card (up to 10 per card). Any approved teammate
+--    can add; the uploader or an admin can remove. Bytes live in the
+--    "card-attachments" storage bucket; this table is the per-card list.
+create table if not exists public.card_attachments (
+  id            uuid primary key default gen_random_uuid(),
+  card_id       uuid not null references public.board_cards (id) on delete cascade,
+  path          text not null,
+  name          text not null default '',
+  size          bigint,
+  mime          text,
+  uploader_id   uuid references public.profiles (id) on delete set null,
+  uploader_name text not null default '',
+  created_at    timestamptz not null default now()
+);
+create index if not exists card_attachments_card_idx on public.card_attachments (card_id, created_at);
+alter table public.card_attachments enable row level security;
+
+drop policy if exists card_attachments_select on public.card_attachments;
+drop policy if exists card_attachments_insert on public.card_attachments;
+drop policy if exists card_attachments_delete on public.card_attachments;
+create policy card_attachments_select on public.card_attachments for select
+  using (public.is_approved());
+create policy card_attachments_insert on public.card_attachments for insert
+  with check (public.is_approved() and uploader_id = auth.uid());
+create policy card_attachments_delete on public.card_attachments for delete
+  using (uploader_id = auth.uid() or public.is_admin());
+
+-- Enforce the 10-per-card cap server-side (so a client can't exceed it).
+create or replace function public.enforce_card_attachment_limit()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if (select count(*) from public.card_attachments where card_id = new.card_id) >= 10 then
+    raise exception 'A card can have at most 10 attachments.';
+  end if;
+  return new;
+end; $$;
+drop trigger if exists enforce_card_attachment_limit on public.card_attachments;
+create trigger enforce_card_attachment_limit before insert on public.card_attachments
+  for each row execute function public.enforce_card_attachment_limit();
+
+-- "card-attachments" storage bucket + policies. Files are stored as
+-- <uploader_id>/<card_id>/<random>-<filename>, so the uploader can delete their
+-- own and admins can delete anyone's (same folder convention as avatars).
+insert into storage.buckets (id, name, public)
+values ('card-attachments', 'card-attachments', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists card_attach_read   on storage.objects;
+drop policy if exists card_attach_insert on storage.objects;
+drop policy if exists card_attach_delete on storage.objects;
+create policy card_attach_read on storage.objects for select
+  using (bucket_id = 'card-attachments');
+create policy card_attach_insert on storage.objects for insert with check (
+  bucket_id = 'card-attachments' and public.is_approved()
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+create policy card_attach_delete on storage.objects for delete using (
+  bucket_id = 'card-attachments'
+  and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+);
+
 commit;
 
 -- Pick up the new tables/columns in the API immediately (no waiting/erroring).

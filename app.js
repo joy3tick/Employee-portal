@@ -205,6 +205,9 @@ function icon(name, cls = 'ic') {
     chevron: '<polyline points="6 9 12 15 18 9"/>',
     comment: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>',
     filter: '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
+    paperclip: '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+    download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+    file: '<path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>',
   };
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -251,8 +254,8 @@ const ui = { view: 'dashboard', search: '', teamUser: null };
 const reviews = { weekStart: weekStartISO() };
 // filter   = 'all' | 'mine' (the Everyone/Just me segment; decided per-role on first open)
 // assignee = 'all' | a user id   |  label = 'all' | a label key  |  due = see dueMatches()
-// checklist/comments = { [card_id]: [...] }, loaded alongside the cards.
-const tasks = { rows: [], filter: null, assignee: 'all', label: 'all', due: 'all', checklist: {}, comments: {} };
+// checklist/comments/attachments = { [card_id]: [...] }, loaded alongside the cards.
+const tasks = { rows: [], filter: null, assignee: 'all', label: 'all', due: 'all', checklist: {}, comments: {}, attachments: {} };
 const TASK_STAGES = ['inbound', 'in_progress', 'awaiting_review', 'completed'];
 const TASK_LABEL = { inbound: 'Inbound', in_progress: 'In progress', awaiting_review: 'Awaiting review', completed: 'Completed' };
 // Preset card labels (admins tag cards with these; they render as colored pills).
@@ -265,7 +268,11 @@ const CARD_LABELS = {
   quick:    { label: 'Quick win', color: 'var(--green)' },
 };
 let taskDragId = null; // id of the card being dragged (desktop drag-and-drop)
+let attachBusyCard = null; // id of the card whose attachments are mid-upload
 const expandedTasks = new Set(); // ids of cards expanded inline on the board
+const ATTACH_BUCKET = 'card-attachments';
+const ATTACH_MAX = 10;                 // max attachments per card
+const ATTACH_MAX_BYTES = 25 * 1024 * 1024; // 25 MB per file
 
 async function fetchProfile(userId) {
   for (let i = 0; i < 4; i++) {
@@ -2654,13 +2661,14 @@ function viewBoard(view) {
 
 async function loadBoard() {
   const board = document.getElementById('kanban');
-  // Cards, plus their checklist items and comments. The latter two tables may
-  // not exist yet on an older database — treat those errors as "empty" so the
-  // board still loads, then the user re-runs schema.sql to light them up.
-  const [cardsRes, listRes, comRes] = await Promise.all([
+  // Cards, plus their checklist items, comments, and attachments. The extra
+  // tables may not exist yet on an older database — treat those errors as
+  // "empty" so the board still loads, then run the migration to light them up.
+  const [cardsRes, listRes, comRes, attRes] = await Promise.all([
     supabase.from('board_cards').select('*').order('updated_at', { ascending: false }),
     supabase.from('card_checklist_items').select('id, card_id, text, done, sort_order'),
     supabase.from('card_comments').select('id, card_id, author_id, author_name, author_avatar, body, created_at'),
+    supabase.from('card_attachments').select('id, card_id, path, name, size, mime, uploader_id, uploader_name, created_at'),
   ]);
   if (cardsRes.error) {
     if (board) board.innerHTML = `<div class="empty">Couldn't load the board: ${esc(cardsRes.error.message)}</div>`;
@@ -2669,6 +2677,7 @@ async function loadBoard() {
   tasks.rows = cardsRes.data || [];
   tasks.checklist = groupBy(listRes.error ? [] : listRes.data, 'card_id');
   tasks.comments = groupBy(comRes.error ? [] : comRes.data, 'card_id');
+  tasks.attachments = groupBy(attRes.error ? [] : attRes.data, 'card_id');
   populateBoardFilters();
   renderBoard();
 }
@@ -2762,6 +2771,10 @@ function taskMetaHTML(t) {
   }
   if (comments.length) {
     parts.push(`<span class="kc-meta-i" title="Comments">${icon('comment', 'ic sm')}${comments.length}</span>`);
+  }
+  const attachments = tasks.attachments[t.id] || [];
+  if (attachments.length) {
+    parts.push(`<span class="kc-meta-i" title="Attachments">${icon('paperclip', 'ic sm')}${attachments.length}</span>`);
   }
   return parts.length ? `<div class="kc-meta">${parts.join('')}</div>` : '';
 }
@@ -2968,10 +2981,15 @@ function confirmDeleteTask(t) {
     danger: true,
     onConfirm: async () => {
       const snapshot = tasks.rows;
+      const attachPaths = (tasks.attachments[t.id] || []).map((a) => a.path).filter(Boolean);
       tasks.rows = tasks.rows.filter((x) => x.id !== t.id);
       renderBoard();
       const { error } = await supabase.from('board_cards').delete().eq('id', t.id);
       if (error) { tasks.rows = snapshot; renderBoard(); toast(error.message); return; }
+      // The attachment rows cascade-delete with the card; best-effort remove the
+      // stored files too so they don't orphan (ignored if we lack permission).
+      if (attachPaths.length) supabase.storage.from(ATTACH_BUCKET).remove(attachPaths).catch(() => {});
+      delete tasks.attachments[t.id];
       toast('Task deleted');
     },
   });
@@ -3022,7 +3040,7 @@ async function openBoardModal(existing) {
       ${existing && existing.status === 'completed' && existing.completed_at ? `<p class="muted-mini" style="margin:14px 0 0;">✓ Completed ${esc(fmtDate(existing.completed_at.slice(0, 10)))}.</p>` : ''}
       ${existing
         ? '<div id="tk-extras" class="tk-extras"></div>'
-        : '<p class="muted-mini" style="margin:16px 0 0;">A checklist and comments open up once the task is created.</p>'}
+        : '<p class="muted-mini" style="margin:16px 0 0;">A checklist, attachments, and comments open up once the task is created.</p>'}
       <div id="tk-msg" class="msg"></div>
       <div class="modal-foot">
         ${existing && taskCanDelete(existing) ? '<button class="btn danger" id="tk-del" type="button" style="margin-right:auto;">Delete</button>' : ''}
@@ -3092,8 +3110,10 @@ function renderCardExtras(overlay, card) {
   if (!host) return;
   host.innerHTML = `
     <div class="tk-section" id="tk-checklist"></div>
+    <div class="tk-section" id="tk-attachments"></div>
     <div class="tk-section" id="tk-comments"></div>`;
   renderChecklist(overlay, card);
+  renderAttachments(overlay, card);
   renderComments(overlay, card);
 }
 
@@ -3220,6 +3240,124 @@ async function deleteComment(overlay, card, c) {
   if (error) { toast(error.message); return; }
   const i = list.indexOf(c); if (i >= 0) list.splice(i, 1);
   renderComments(overlay, card); renderBoard();
+}
+
+// ---------------------------------------------------------------------------
+// Card attachments — files on a card. Any approved teammate (employees too) can
+// add up to 10 per card; the uploader or an admin can remove them. Bytes live
+// in the "card-attachments" storage bucket; the card_attachments table holds
+// the per-card list (and a trigger enforces the 10-file cap server-side).
+// ---------------------------------------------------------------------------
+function fmtBytes(n) {
+  if (n == null) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function attachUrl(path, downloadName) {
+  const { data } = supabase.storage.from(ATTACH_BUCKET)
+    .getPublicUrl(path, downloadName ? { download: downloadName } : undefined);
+  return data.publicUrl;
+}
+
+function renderAttachments(overlay, card) {
+  const host = overlay.querySelector('#tk-attachments');
+  if (!host) return;
+  const items = (tasks.attachments[card.id] || []).slice()
+    .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+  const count = items.length;
+  const full = count >= ATTACH_MAX;
+  const busy = attachBusyCard === card.id;
+  const isImg = (a) => (a.mime || '').startsWith('image/');
+  host.innerHTML = `
+    <div class="tk-sec-head">
+      <h3>${icon('paperclip', 'ic sm')} Attachments</h3>
+      <span class="tk-sec-prog">${count}/${ATTACH_MAX}</span>
+    </div>
+    <div class="at-list">
+      ${count ? items.map((a) => `
+        <div class="at-item" data-at="${esc(a.id)}">
+          <a class="at-thumb" href="${esc(attachUrl(a.path))}" target="_blank" rel="noopener">
+            ${isImg(a) ? `<img src="${esc(attachUrl(a.path))}" alt="${esc(a.name)}" loading="lazy" />` : icon('file', 'ic')}
+          </a>
+          <div class="at-body">
+            <a class="at-name" href="${esc(attachUrl(a.path))}" target="_blank" rel="noopener" title="${esc(a.name)}">${esc(a.name)}</a>
+            <div class="at-meta">${a.size != null ? esc(fmtBytes(a.size)) + ' · ' : ''}${esc(shortName(a.uploader_name) || 'Someone')} · ${esc(fmtWhen(a.created_at))}</div>
+          </div>
+          <a class="at-act" href="${esc(attachUrl(a.path, a.name || true))}" title="Download">${icon('download', 'ic sm')}</a>
+          ${(a.uploader_id === me.id || me.role === 'admin') ? `<button type="button" class="at-act at-del" data-at-del title="Remove attachment">${icon('trash', 'ic sm')}</button>` : ''}
+        </div>`).join('') : '<div class="muted-mini">No attachments yet.</div>'}
+    </div>
+    <div class="at-add">
+      <input type="file" id="at-file" multiple hidden />
+      <button type="button" class="btn ghost sm" id="at-add-btn"${full || busy ? ' disabled' : ''}>
+        ${busy ? 'Uploading…' : full ? `Limit reached (${ATTACH_MAX})` : `${icon('plus', 'ic sm')} Add files`}
+      </button>
+      ${!full && !busy ? `<span class="at-hint muted-mini">Up to ${ATTACH_MAX} files · 25 MB each</span>` : ''}
+    </div>`;
+  host.querySelectorAll('.at-item').forEach((row) => {
+    const a = items.find((x) => x.id === row.dataset.at);
+    const dl = row.querySelector('[data-at-del]');
+    if (dl && a) dl.onclick = () => deleteAttachment(overlay, card, a);
+  });
+  const fileInput = host.querySelector('#at-file');
+  const addBtn = host.querySelector('#at-add-btn');
+  if (addBtn && fileInput && !full && !busy) {
+    addBtn.onclick = () => fileInput.click();
+    fileInput.onchange = () => { if (fileInput.files && fileInput.files.length) addAttachments(overlay, card, [...fileInput.files]); };
+  }
+}
+
+async function uploadCardAttachment(card, file) {
+  const safe = ((file.name || 'file').replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+/, '').slice(-80)) || 'file';
+  const rnd = (globalThis.crypto && globalThis.crypto.randomUUID)
+    ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const path = `${me.id}/${card.id}/${rnd}-${safe}`;
+  const { error: upErr } = await supabase.storage.from(ATTACH_BUCKET)
+    .upload(path, file, { contentType: file.type || 'application/octet-stream', upsert: false });
+  if (upErr) return { error: upErr };
+  const { data, error } = await supabase.from('card_attachments').insert({
+    card_id: card.id, path, name: file.name || safe, size: file.size, mime: file.type || null,
+    uploader_id: me.id, uploader_name: me.full_name || me.email || '',
+  }).select('id, card_id, path, name, size, mime, uploader_id, uploader_name, created_at').single();
+  if (error) {
+    // Row rejected (e.g. the cap lost a race) — drop the now-orphaned file.
+    await supabase.storage.from(ATTACH_BUCKET).remove([path]).catch(() => {});
+    return { error };
+  }
+  return { data };
+}
+
+async function addAttachments(overlay, card, files) {
+  const list = tasks.attachments[card.id] || (tasks.attachments[card.id] = []);
+  const remaining = ATTACH_MAX - list.length;
+  if (remaining <= 0) { toast(`A card can have at most ${ATTACH_MAX} attachments.`); return; }
+  let chosen = files;
+  if (chosen.length > remaining) {
+    toast(`Only ${remaining} more file${remaining === 1 ? '' : 's'} allowed — adding the first ${remaining}.`);
+    chosen = chosen.slice(0, remaining);
+  }
+  attachBusyCard = card.id;
+  renderAttachments(overlay, card);
+  for (const f of chosen) {
+    if (f.size > ATTACH_MAX_BYTES) { toast(`“${f.name}” is over 25 MB — skipped.`); continue; }
+    const { data, error } = await uploadCardAttachment(card, f);
+    if (error) { toast(error.message); continue; }
+    list.push(data);
+  }
+  attachBusyCard = null;
+  renderAttachments(overlay, card);
+  renderBoard();
+}
+
+async function deleteAttachment(overlay, card, a) {
+  const { error } = await supabase.from('card_attachments').delete().eq('id', a.id);
+  if (error) { toast(error.message); return; }
+  const list = tasks.attachments[card.id] || [];
+  const i = list.indexOf(a); if (i >= 0) list.splice(i, 1);
+  supabase.storage.from(ATTACH_BUCKET).remove([a.path]).catch(() => {});
+  renderAttachments(overlay, card); renderBoard();
 }
 
 // Friendly "2h ago" / "3d ago" timestamp for comments.

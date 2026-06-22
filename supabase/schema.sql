@@ -468,6 +468,90 @@ create policy card_comments_delete on public.card_comments for delete using (
 );
 
 -- ---------------------------------------------------------------------------
+-- Card attachments — files on a board card (up to 10 per card).
+-- ---------------------------------------------------------------------------
+-- Any approved teammate (employees included) can attach files to any card; the
+-- uploader — or an admin — can remove them. The bytes live in the
+-- "card-attachments" storage bucket (policies further below); this table is the
+-- per-card list. `path` is the object key in that bucket; name/size/mime and the
+-- denormalized uploader_name are kept for display without reading profiles.
+create table if not exists public.card_attachments (
+  id            uuid primary key default gen_random_uuid(),
+  card_id       uuid not null references public.board_cards (id) on delete cascade,
+  path          text not null,
+  name          text not null default '',
+  size          bigint,
+  mime          text,
+  uploader_id   uuid references public.profiles (id) on delete set null,
+  uploader_name text not null default '',
+  created_at    timestamptz not null default now()
+);
+create index if not exists card_attachments_card_idx on public.card_attachments (card_id, created_at);
+
+alter table public.card_attachments enable row level security;
+
+-- Everyone approved can see a card's attachment list (the board is shared).
+drop policy if exists card_attachments_select on public.card_attachments;
+create policy card_attachments_select on public.card_attachments for select
+  using (public.is_approved());
+
+-- Any approved user can attach — but only AS themselves (uploader_id = auth.uid()).
+drop policy if exists card_attachments_insert on public.card_attachments;
+create policy card_attachments_insert on public.card_attachments for insert with check (
+  public.is_approved() and uploader_id = auth.uid()
+);
+
+-- You can remove your own attachment; admins can remove anyone's.
+drop policy if exists card_attachments_delete on public.card_attachments;
+create policy card_attachments_delete on public.card_attachments for delete using (
+  uploader_id = auth.uid() or public.is_admin()
+);
+
+-- Enforce the "max 10 attachments per card" cap in the database, so it holds
+-- even if a client ignores it.
+create or replace function public.enforce_card_attachment_limit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if (select count(*) from public.card_attachments where card_id = new.card_id) >= 10 then
+    raise exception 'A card can have at most 10 attachments.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_card_attachment_limit on public.card_attachments;
+create trigger enforce_card_attachment_limit
+  before insert on public.card_attachments
+  for each row execute function public.enforce_card_attachment_limit();
+
+-- "card-attachments" storage bucket. Files are organized as
+-- <uploader_id>/<card_id>/<random>-<filename>, so the per-user folder convention
+-- (same as avatars) lets the uploader delete their own files while admins can
+-- delete anyone's. Reads are open to approved users via the app.
+insert into storage.buckets (id, name, public)
+values ('card-attachments', 'card-attachments', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists card_attach_read   on storage.objects;
+drop policy if exists card_attach_insert on storage.objects;
+drop policy if exists card_attach_delete on storage.objects;
+create policy card_attach_read on storage.objects for select
+  using (bucket_id = 'card-attachments');
+create policy card_attach_insert on storage.objects for insert with check (
+  bucket_id = 'card-attachments'
+  and public.is_approved()
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+create policy card_attach_delete on storage.objects for delete using (
+  bucket_id = 'card-attachments'
+  and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+);
+
+-- ---------------------------------------------------------------------------
 -- Company events / off-sites (admin-managed, everyone sees them)
 -- ---------------------------------------------------------------------------
 -- Admins drop events, off-sites, holidays, and socials onto the shared
