@@ -272,7 +272,8 @@ let attachBusyCard = null; // id of the card whose attachments are mid-upload
 const expandedTasks = new Set(); // ids of cards expanded inline on the board
 const ATTACH_BUCKET = 'card-attachments';
 const ATTACH_MAX = 10;                 // max attachments per card
-const ATTACH_MAX_BYTES = 25 * 1024 * 1024; // 25 MB per file
+const ATTACH_MAX_MB = 100;             // max size per file (MB)
+const ATTACH_MAX_BYTES = ATTACH_MAX_MB * 1024 * 1024;
 
 async function fetchProfile(userId) {
   for (let i = 0; i < 4; i++) {
@@ -3294,7 +3295,7 @@ function renderAttachments(overlay, card) {
       <button type="button" class="btn ghost sm" id="at-add-btn"${full || busy ? ' disabled' : ''}>
         ${busy ? 'Uploading…' : full ? `Limit reached (${ATTACH_MAX})` : `${icon('plus', 'ic sm')} Add files`}
       </button>
-      ${!full && !busy ? `<span class="at-hint muted-mini">Up to ${ATTACH_MAX} files · 25 MB each</span>` : ''}
+      ${!full && !busy ? `<span class="at-hint muted-mini">Up to ${ATTACH_MAX} files · ${ATTACH_MAX_MB} MB each</span>` : ''}
     </div>`;
   host.querySelectorAll('.at-item').forEach((row) => {
     const a = items.find((x) => x.id === row.dataset.at);
@@ -3341,7 +3342,7 @@ async function addAttachments(overlay, card, files) {
   attachBusyCard = card.id;
   renderAttachments(overlay, card);
   for (const f of chosen) {
-    if (f.size > ATTACH_MAX_BYTES) { toast(`“${f.name}” is over 25 MB — skipped.`); continue; }
+    if (f.size > ATTACH_MAX_BYTES) { toast(`“${f.name}” is over ${ATTACH_MAX_MB} MB — skipped.`); continue; }
     const { data, error } = await uploadCardAttachment(card, f);
     if (error) { toast(error.message); continue; }
     list.push(data);

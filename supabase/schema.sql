@@ -532,9 +532,14 @@ create trigger enforce_card_attachment_limit
 -- <uploader_id>/<card_id>/<random>-<filename>, so the per-user folder convention
 -- (same as avatars) lets the uploader delete their own files while admins can
 -- delete anyone's. Reads are open to approved users via the app.
-insert into storage.buckets (id, name, public)
-values ('card-attachments', 'card-attachments', true)
-on conflict (id) do update set public = true;
+-- file_size_limit caps uploads at 100 MB per file.
+--   ⚠️ Supabase ALSO enforces a project-wide upload limit (Dashboard -> Storage
+--   -> Settings -> "Upload file size limit") which a bucket can't exceed. Raise
+--   that to at least 100 MB too, or larger files are rejected before this limit
+--   even applies. (The Free plan caps the project limit at 50 MB.)
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('card-attachments', 'card-attachments', true, 104857600)
+on conflict (id) do update set public = true, file_size_limit = 104857600;
 
 drop policy if exists card_attach_read   on storage.objects;
 drop policy if exists card_attach_insert on storage.objects;
