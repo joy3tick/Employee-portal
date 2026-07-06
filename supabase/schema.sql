@@ -577,6 +577,9 @@ create table if not exists public.events (
 );
 create index if not exists events_starts_idx on public.events (starts_on);
 create index if not exists events_ends_idx   on public.events (ends_on);
+-- Optional cover image per event (admin-uploaded). Stored in the "event-images"
+-- bucket; this column holds the object key (the app builds the public URL).
+alter table public.events add column if not exists image_path text;
 
 alter table public.events enable row level security;
 
@@ -587,6 +590,29 @@ create policy events_select_approved on public.events for select
   using (public.is_approved());
 create policy events_admin_all on public.events for all
   using (public.is_admin()) with check (public.is_admin());
+
+-- "event-images" storage bucket — public read (everyone sees event cover
+-- images), admin-only writes (only admins manage events, so the path doesn't
+-- need to encode ownership). 10 MB per image.
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('event-images', 'event-images', true, 10485760)
+on conflict (id) do update set public = true, file_size_limit = 10485760;
+
+drop policy if exists event_images_read   on storage.objects;
+drop policy if exists event_images_write  on storage.objects;
+drop policy if exists event_images_update on storage.objects;
+drop policy if exists event_images_delete on storage.objects;
+create policy event_images_read on storage.objects for select
+  using (bucket_id = 'event-images');
+create policy event_images_write on storage.objects for insert with check (
+  bucket_id = 'event-images' and public.is_admin()
+);
+create policy event_images_update on storage.objects for update
+  using (bucket_id = 'event-images' and public.is_admin())
+  with check (bucket_id = 'event-images' and public.is_admin());
+create policy event_images_delete on storage.objects for delete using (
+  bucket_id = 'event-images' and public.is_admin()
+);
 
 -- ---------------------------------------------------------------------------
 -- Reload the PostgREST schema cache so the new tables/columns are queryable

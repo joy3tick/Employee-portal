@@ -19,15 +19,6 @@ const toISO = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDat
 const TODAY = toISO(new Date());
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']; // Monday-first
-const DOW1 = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-const WD_PLURAL = ['Sundays','Mondays','Tuesdays','Wednesdays','Thursdays','Fridays','Saturdays'];
-
-const KIND_LABEL = { in: 'In office', remote: 'Working remote', vacation: 'On vacation', sick: 'Off sick' };
-const KIND_EMOJI = { in: '🏢', remote: '🏠', vacation: '🌴', sick: '🤒' };
-const KIND_RANK = { in: 0, remote: 1, vacation: 2, sick: 3 };
-const kindOf = (a) => a.kind || 'in';
-// 'in' and 'remote' are working days that carry start/end hours; the others don't.
-const hasHours = (k) => k === 'in' || k === 'remote';
 
 // Company events on the shared calendar (admin-managed). Each kind has a label + emoji.
 const EVENT_KIND = {
@@ -166,15 +157,6 @@ const fmtRange = (s, e) => `${fmt12(s)} – ${fmt12(e)}${isOvernight(s, e) ? ' <
 const fmtRangePlain = (s, e) => `${fmt12(s)} – ${fmt12(e)}${isOvernight(s, e) ? ' (next day)' : ''}`;
 const fmtCompactRange = (s, e) => `${fmtCompact(s)}–${fmtCompact(e)}`;
 
-// Hours worked for an in-office or remote entry (overnight wraps to the next day).
-function entryHours(r) {
-  if (!hasHours(kindOf(r)) || !r.start_time || !r.end_time) return 0;
-  const [sh, sm] = hhmm(r.start_time).split(':').map(Number);
-  const [eh, em] = hhmm(r.end_time).split(':').map(Number);
-  let mins = (eh * 60 + em) - (sh * 60 + sm);
-  if (mins <= 0) mins += 24 * 60;
-  return mins / 60;
-}
 function fmtHours(h) {
   const m = Math.round(h * 60);
   const H = Math.floor(m / 60);
@@ -208,6 +190,9 @@ function icon(name, cls = 'ic') {
     paperclip: '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
     download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
     file: '<path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    pin: '<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
+    image: '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
   };
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -320,17 +305,6 @@ supabase.auth.onAuthStateChange((_event, session) => {
   setTimeout(() => routeForSession(session), 0);
 });
 
-async function fetchDays(from, to) {
-  const { data, error } = await supabase
-    .from('office_days')
-    .select('day, user_id, display_name, avatar_url, start_time, end_time, kind')
-    .gte('day', from)
-    .lte('day', to)
-    .order('start_time', { ascending: true });
-  if (error) throw error;
-  return data || [];
-}
-
 // ---------------------------------------------------------------------------
 // Profile pictures (Supabase Storage: public "avatars" bucket)
 // ---------------------------------------------------------------------------
@@ -354,7 +328,6 @@ async function uploadAvatar(uid, file) {
   const url = `${data.publicUrl}?t=${Date.now()}`; // cache-bust so the new photo shows immediately
   const { error: pErr } = await supabase.from('profiles').update({ avatar_url: url }).eq('id', uid);
   if (pErr) throw pErr;
-  await supabase.from('office_days').update({ avatar_url: url }).eq('user_id', uid);
   await supabase.from('board_cards').update({ assignee_avatar: url }).eq('assignee_id', uid);
   return url;
 }
@@ -363,7 +336,6 @@ async function removeAvatar(uid) {
   await supabase.storage.from('avatars').remove([`${uid}/avatar`]);
   const { error } = await supabase.from('profiles').update({ avatar_url: null }).eq('id', uid);
   if (error) throw error;
-  await supabase.from('office_days').update({ avatar_url: null }).eq('user_id', uid);
   await supabase.from('board_cards').update({ assignee_avatar: null }).eq('assignee_id', uid);
   if (uid === me.id) me.avatar_url = null;
 }
@@ -525,7 +497,6 @@ function openProfileModal() {
     if (name !== (me.full_name || '')) {
       const { error } = await supabase.from('profiles').update({ full_name: name }).eq('id', me.id);
       if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-      await supabase.from('office_days').update({ display_name: name }).eq('user_id', me.id);
       await supabase.from('board_cards').update({ assignee_name: name }).eq('assignee_id', me.id);
       me.full_name = name;
       dirty = true;
@@ -597,7 +568,7 @@ function renderShell() {
         </div>
         <nav class="s-nav">
           <button class="nav-item" data-view="dashboard" type="button">${icon('dash')}<span class="txt">Dashboard</span></button>
-          <button class="nav-item" data-view="schedule" type="button">${icon('cal')}<span class="txt">Schedule</span></button>
+          <button class="nav-item" data-view="events" type="button">${icon('cal')}<span class="txt">Events</span></button>
           <button class="nav-item" data-view="board" type="button">${icon('board')}<span class="txt">Board</span></button>
           ${isAdmin ? `<button class="nav-item" data-view="team" type="button">${icon('team')}<span class="txt">Team</span><span class="nav-badge" id="nav-pending" style="display:none"></span></button>` : ''}
           ${isAdmin ? `<button class="nav-item" data-view="reviews" type="button">${icon('star')}<span class="txt">Reviews</span></button>` : ''}
@@ -607,11 +578,9 @@ function renderShell() {
       </aside>
       <div class="main">
         <div class="topbar">
-          <label class="search">${icon('search', 'ic sm')}<input id="search-input" type="text" placeholder="Search people…" value="${esc(ui.search)}" /></label>
-          <div class="now" id="now-text"></div>
+          <div class="now" id="now-text" style="margin-right:auto"></div>
           <button class="icon-btn" id="bell" type="button" title="Notifications">${icon('bell')}<span class="bell-badge" id="bell-badge" style="display:none"></span></button>
-          <div class="avatar-stack tb-stack" id="tb-avatars" title="In the office today"></div>
-          <button class="add-btn" id="quick-add" type="button" title="Schedule a day">${icon('plus')}</button>
+          ${isAdmin ? `<button class="add-btn" id="quick-add" type="button" title="Add event">${icon('plus')}</button>` : ''}
         </div>
         <div id="view"></div>
       </div>
@@ -621,20 +590,11 @@ function renderShell() {
     b.onclick = () => { ui.teamUser = null; setView(b.dataset.view); };
   });
   document.getElementById('nav-settings').onclick = openProfileModal;
-  document.getElementById('quick-add').onclick = () => gotoDay(TODAY);
+  const qa = document.getElementById('quick-add');
+  if (qa) qa.onclick = () => openEventModal(null);
   document.getElementById('bell').onclick = () => {
     if (isAdmin) { ui.teamUser = null; setView('team'); }
     else toast("You're all caught up 🎉");
-  };
-
-  const sin = document.getElementById('search-input');
-  sin.oninput = () => {
-    ui.search = sin.value.trim().toLowerCase();
-    if (ui.view !== 'schedule') setView('schedule');
-    else { renderCalendar(); renderPanel(); }
-  };
-  sin.onkeydown = (e) => {
-    if (e.key === 'Escape') { sin.value = ''; ui.search = ''; if (ui.view === 'schedule') { renderCalendar(); renderPanel(); } }
   };
 
   startClock();
@@ -664,17 +624,11 @@ function setView(v) {
   const view = document.getElementById('view');
   if (!view) return;
   if (v === 'dashboard') viewDashboard(view);
+  else if (v === 'events') viewEvents(view);
   else if (v === 'board') viewBoard(view);
   else if (v === 'team') viewTeam(view);
   else if (v === 'reviews') viewReviews(view);
-  else viewSchedule(view);
-}
-
-function gotoDay(iso) {
-  const [y, m] = iso.split('-').map(Number);
-  sched.view = { year: y, month: m - 1 };
-  sched.pendingSelect = iso;
-  setView('schedule');
+  else viewDashboard(view);
 }
 
 function updateBell(count) {
@@ -690,34 +644,10 @@ function updateBell(count) {
   }
 }
 
-function updateTopStack(rows) {
-  const el = document.getElementById('tb-avatars');
-  if (!el) return;
-  const seen = new Set();
-  const list = [];
-  for (const r of rows || []) {
-    if (r.day !== TODAY || kindOf(r) !== 'in' || seen.has(r.user_id)) continue;
-    seen.add(r.user_id);
-    list.push(r);
-  }
-  list.sort((a, b) => (a.user_id === me.id ? -1 : b.user_id === me.id ? 1 : 0));
-  el.innerHTML =
-    list.slice(0, 4).map((r) => avatarHTML(r.display_name, r.user_id === me.id, 'sm', r.avatar_url)).join('') +
-    (list.length > 4 ? `<span class="avatar sm more">+${list.length - 4}</span>` : '');
-}
-
 // ===========================================================================
 // Dashboard view
 // ===========================================================================
-const dash = {
-  view: (() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; })(),
-  gridRows: [],
-  upRows: [],
-};
-
 function viewDashboard(view) {
-  const n = new Date();
-  dash.view = { year: n.getFullYear(), month: n.getMonth() };
   const isAdmin = me.role === 'admin';
 
   view.innerHTML = `
@@ -726,8 +656,8 @@ function viewDashboard(view) {
         <div class="card hero">
           <div class="hero-text">
             <h1>Welcome, <span class="hl">${esc(firstName(me.full_name || me.email))}</span></h1>
-            <p>Plan your office days, see who's around, and keep your week on track — all from one place.</p>
-            <button class="btn primary" id="hero-cta" type="button">Schedule office day</button>
+            <p>See what's coming up, work your board, and keep your week on track — all from one place.</p>
+            <button class="btn primary" id="hero-cta" type="button">View events</button>
           </div>
           ${HERO_ART}
         </div>
@@ -748,22 +678,13 @@ function viewDashboard(view) {
                 <div><span>Status</span><strong style="text-transform:capitalize">${esc(me.status)}</strong></div>
               </div>
             </div>
-            <div class="card pad month-card">
-              <div class="card-head"><h3>This month</h3></div>
-              <div class="month-big"><span id="mc-count">–</span><span class="muted-mini" id="mc-of"></span></div>
-              <div class="bar"><i id="mc-bar" style="width:0%"></i></div>
-              <div class="mc-foot">
-                <div class="avatar-stack" id="mc-stack"></div>
-                <span class="muted-mini" id="mc-note"></span>
-              </div>
-            </div>
           </div>
-          <div class="card pad upcoming-card">
+          <div class="card pad events-card">
             <div class="card-head">
-              <h3>My schedule</h3>
-              <button class="link-btn" id="see-cal" type="button">View calendar</button>
+              <h3>Upcoming events</h3>
+              <button class="link-btn" id="see-events" type="button">See all</button>
             </div>
-            <div id="up-list"><div class="spinner">Loading…</div></div>
+            <div id="de-body"><div class="spinner">Loading…</div></div>
           </div>
         </div>
       </div>
@@ -776,20 +697,6 @@ function viewDashboard(view) {
           <div class="card-head"><h3>Your latest review</h3></div>
           <div id="rc-body"><div class="spinner">Loading…</div></div>
         </div>
-        <div class="card pad mini-card">
-          <div class="mini-head">
-            <strong id="mini-title"></strong>
-            <span class="mini-nav">
-              <button id="mini-prev" type="button" aria-label="Previous month">‹</button>
-              <button id="mini-next" type="button" aria-label="Next month">›</button>
-            </span>
-          </div>
-          <div class="mini-grid" id="mini-grid"></div>
-        </div>
-        <div class="card pad today-card">
-          <div class="card-head"><h3>Who's in today</h3></div>
-          <div id="today-list"><div class="spinner">Loading…</div></div>
-        </div>
         ${isAdmin ? `
         <div class="card pad pending-card">
           <div class="card-head"><h3>Pending approvals</h3></div>
@@ -798,34 +705,17 @@ function viewDashboard(view) {
       </aside>
     </div>`;
 
-  document.getElementById('hero-cta').onclick = () => gotoDay(TODAY);
-  document.getElementById('see-cal').onclick = () => setView('schedule');
+  document.getElementById('hero-cta').onclick = () => setView('events');
+  document.getElementById('see-events').onclick = () => setView('events');
   document.getElementById('prof-edit').onclick = openProfileModal;
   document.getElementById('prof-avatar').onclick = openProfileModal;
-  document.getElementById('mini-prev').onclick = () => shiftMini(-1);
-  document.getElementById('mini-next').onclick = () => shiftMini(1);
   document.getElementById('tc-all').onclick = () => setView('board');
 
   loadDashboard();
 }
 
-async function loadDashboard() {
-  const cells = gridCells(dash.view.year, dash.view.month);
-  try {
-    [dash.gridRows, dash.upRows] = await Promise.all([
-      fetchDays(toISO(cells[0]), toISO(cells[41])),
-      fetchDays(TODAY, addDaysISO(TODAY, 60)),
-    ]);
-  } catch (err) {
-    const el = document.getElementById('up-list');
-    if (el) el.innerHTML = `<div class="empty">Couldn't load schedule: ${esc(err.message)}</div>`;
-    return;
-  }
-  renderMini();
-  renderUpcoming();
-  renderTodayCard();
-  renderMonthCard();
-  updateTopStack(dash.upRows);
+function loadDashboard() {
+  loadDashEvents();
   loadMyTasksCard();
   loadMyReviewCard();
   if (me.role === 'admin') loadPendingCard();
@@ -897,143 +787,6 @@ function openMyReviewsModal(revs) {
   overlay.querySelector('#myr-close').onclick = close;
 }
 
-async function shiftMini(delta) {
-  let m = dash.view.month + delta;
-  let y = dash.view.year;
-  if (m < 0) { m = 11; y--; }
-  if (m > 11) { m = 0; y++; }
-  dash.view = { year: y, month: m };
-  const cells = gridCells(y, m);
-  try {
-    dash.gridRows = await fetchDays(toISO(cells[0]), toISO(cells[41]));
-  } catch { dash.gridRows = []; }
-  renderMini();
-}
-
-function renderMini() {
-  const title = document.getElementById('mini-title');
-  const grid = document.getElementById('mini-grid');
-  if (!title || !grid) return;
-  title.textContent = `${MONTHS[dash.view.month].slice(0, 3)} ${dash.view.year}`;
-
-  const byDay = new Map();
-  for (const r of dash.gridRows) {
-    if (!byDay.has(r.day)) byDay.set(r.day, []);
-    byDay.get(r.day).push(r);
-  }
-
-  let html = DOW1.map((d) => `<span class="mini-dow">${d}</span>`).join('');
-  for (const d of gridCells(dash.view.year, dash.view.month)) {
-    const iso = toISO(d);
-    const inMonth = d.getMonth() === dash.view.month;
-    const list = byDay.get(iso) || [];
-    const meHas = list.some((r) => r.user_id === me.id);
-    const cls = ['mini-day'];
-    if (!inMonth) cls.push('out');
-    if (iso === TODAY) cls.push('today');
-    html += `<button type="button" class="${cls.join(' ')}" data-day="${iso}">${d.getDate()}${
-      list.length ? `<span class="dt${meHas ? '' : ' other'}"></span>` : ''
-    }</button>`;
-  }
-  grid.innerHTML = html;
-  grid.querySelectorAll('.mini-day').forEach((b) => {
-    b.onclick = () => gotoDay(b.dataset.day);
-  });
-}
-
-function renderUpcoming() {
-  const el = document.getElementById('up-list');
-  if (!el) return;
-  const mine = dash.upRows
-    .filter((r) => r.user_id === me.id)
-    .sort((a, b) => a.day.localeCompare(b.day))
-    .slice(0, 5);
-
-  if (!mine.length) {
-    el.innerHTML = `
-      <div class="empty" style="padding:14px 2px;">Nothing scheduled yet.</div>
-      <button class="btn ghost full" id="up-add" type="button">+ Schedule a day</button>`;
-    const b = document.getElementById('up-add');
-    if (b) b.onclick = () => gotoDay(TODAY);
-    return;
-  }
-
-  el.innerHTML = mine.map((r) => {
-    const d = new Date(`${r.day}T00:00:00`);
-    const k = kindOf(r);
-    const title = k === 'in' ? 'In office' : k === 'remote' ? 'Working remote' : k === 'vacation' ? 'Vacation' : 'Sick day';
-    const sub = hasHours(k)
-      ? (r.start_time ? fmtRangePlain(r.start_time, r.end_time) : 'no hours set')
-      : d.toLocaleDateString(undefined, { weekday: 'long' });
-    const pill = k === 'in' ? 'IN' : k === 'remote' ? 'REMOTE' : k === 'vacation' ? 'VACATION' : 'SICK';
-    return `
-      <button class="up-row" data-day="${r.day}" type="button">
-        <span class="up-date"><span class="up-num">${d.getDate()}</span><span class="up-mon">${MONTHS[d.getMonth()].slice(0, 3).toUpperCase()} ${d.getFullYear()}</span></span>
-        <span class="up-info"><span class="up-title">${title}</span><span class="up-sub">${sub}</span></span>
-        <span class="pill ${k}">${pill}</span>
-      </button>`;
-  }).join('');
-
-  el.querySelectorAll('.up-row').forEach((b) => {
-    b.onclick = () => gotoDay(b.dataset.day);
-  });
-}
-
-function renderTodayCard() {
-  const el = document.getElementById('today-list');
-  if (!el) return;
-  const today = dash.upRows.filter((r) => r.day === TODAY).sort(entrySort);
-  const ins = today.filter((r) => kindOf(r) === 'in');
-  const outs = today.filter((r) => kindOf(r) !== 'in');
-
-  const inHTML = ins.length
-    ? ins.slice(0, 6).map((r) => {
-        const meFlag = r.user_id === me.id;
-        return `<div class="att">${avatarHTML(r.display_name, meFlag, '', r.avatar_url)}<span class="att-name">${esc(r.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${
-          r.start_time ? `<span class="att-hours">${esc(fmtCompactRange(r.start_time, r.end_time))}</span>` : ''
-        }</div>`;
-      }).join('') + (ins.length > 6 ? `<div class="muted-mini" style="padding:4px 2px">+${ins.length - 6} more</div>` : '')
-    : '<div class="empty" style="padding:8px 2px;">No one yet — be the first!</div>';
-
-  const outHTML = outs.length
-    ? `<div class="out-line">${outs.map((r) => `${KIND_EMOJI[kindOf(r)]} ${esc(shortName(r.display_name))}`).join(' · ')}</div>`
-    : '';
-
-  el.innerHTML = inHTML + outHTML;
-}
-
-function renderMonthCard() {
-  const count = document.getElementById('mc-count');
-  if (!count) return;
-  const n = new Date();
-  const y = n.getFullYear(), m = n.getMonth();
-  const monthRows = dash.gridRows.filter((r) => {
-    const [ry, rm] = r.day.split('-').map(Number);
-    return ry === y && rm - 1 === m;
-  });
-  const myIn = monthRows.filter((r) => r.user_id === me.id && kindOf(r) === 'in').length;
-  const wd = workdaysInMonth(y, m);
-
-  count.textContent = myIn;
-  document.getElementById('mc-of').textContent = ` of ${wd} workdays in office`;
-  document.getElementById('mc-bar').style.width = `${Math.min(100, Math.round((myIn / wd) * 100))}%`;
-
-  const seen = new Set();
-  const mates = [];
-  for (const r of monthRows) {
-    if (seen.has(r.user_id)) continue;
-    seen.add(r.user_id);
-    mates.push(r);
-  }
-  mates.sort((a, b) => (a.user_id === me.id ? -1 : b.user_id === me.id ? 1 : 0));
-  document.getElementById('mc-stack').innerHTML =
-    mates.slice(0, 5).map((r) => avatarHTML(r.display_name, r.user_id === me.id, 'sm', r.avatar_url)).join('') +
-    (mates.length > 5 ? `<span class="avatar sm more">+${mates.length - 5}</span>` : '');
-  document.getElementById('mc-note').textContent = mates.length
-    ? `${mates.length} ${mates.length === 1 ? 'person' : 'people'} active this month`
-    : 'no activity yet this month';
-}
-
 async function loadPendingCard() {
   const box = document.getElementById('pend-box');
   if (!box) return;
@@ -1058,271 +811,7 @@ async function loadPendingCard() {
   if (b) b.onclick = () => { ui.teamUser = null; setView('team'); };
 }
 
-// ===========================================================================
-// Schedule view — office-day scheduling
-// ===========================================================================
-const sched = {
-  view: (() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; })(),
-  cells: [],
-  rows: [],
-  byDay: new Map(),
-  events: [],
-  eventsByDay: new Map(),
-  selectedDay: null,
-  pendingSelect: null,
-  selection: [],   // ISO days picked via drag (length > 1 => bulk mode)
-};
-// Drag-to-select controller. Mouse: press-drag. Touch: press-and-hold, then drag.
-const drag = { anchor: null, active: false, pointerType: null, startX: 0, startY: 0, timer: null };
-let pointerWired = false;
-let panelEditing = false; // showing the entry form for an already-marked day?
-
-function entrySort(a, b) {
-  if (a.user_id === me.id) return -1;
-  if (b.user_id === me.id) return 1;
-  const ka = KIND_RANK[kindOf(a)], kb = KIND_RANK[kindOf(b)];
-  if (ka !== kb) return ka - kb;
-  if (hasHours(kindOf(a))) return hhmm(a.start_time).localeCompare(hhmm(b.start_time));
-  return (a.display_name || '').localeCompare(b.display_name || '');
-}
-
-function viewSchedule(view) {
-  panelEditing = false;
-  const isAdmin = me.role === 'admin';
-  view.innerHTML = `
-    <div class="page-head">
-      <div>
-        <h1>Office schedule</h1>
-        <p class="subtitle" style="margin:2px 0 0;">Tap a day to mark yourself in, remote, on vacation, or off sick — or drag across days (press &amp; hold first on a phone) to book several at once.</p>
-      </div>
-      ${isAdmin ? `<button class="btn ghost" id="sched-backfill" type="button">${icon('plus', 'ic sm')}<span>Log past day</span></button>` : ''}
-      ${isAdmin ? `<button class="btn primary" id="add-event" type="button">${icon('cal', 'ic sm')}<span>Add event</span></button>` : ''}
-    </div>
-    <div id="stats" class="stats"></div>
-    <div class="cal-toolbar">
-      <div class="cal-month-title" id="cal-title"></div>
-      <div class="cal-nav">
-        <button class="btn ghost sm" id="prev" type="button" aria-label="Previous month">‹</button>
-        <button class="btn ghost sm" id="today-btn" type="button">Today</button>
-        <button class="btn ghost sm" id="next" type="button" aria-label="Next month">›</button>
-      </div>
-    </div>
-    <div class="sched">
-      <div class="cal-card card">
-        <div class="cal-grid dow-row">${DOW.map((d) => `<div class="dow">${d}</div>`).join('')}</div>
-        <div class="cal-grid month-grid" id="grid"><div class="spinner" style="grid-column:1/-1">Loading…</div></div>
-      </div>
-      <div id="day-panel"></div>
-    </div>`;
-  document.getElementById('prev').onclick = () => shiftMonth(-1);
-  document.getElementById('next').onclick = () => shiftMonth(1);
-  const addEv = document.getElementById('add-event');
-  if (addEv) addEv.onclick = () => openEventModal(null, sched.selectedDay || TODAY);
-  document.getElementById('today-btn').onclick = () => {
-    const n = new Date();
-    sched.view = { year: n.getFullYear(), month: n.getMonth() };
-    sched.pendingSelect = TODAY;
-    loadSchedule();
-  };
-  const backfillBtn = document.getElementById('sched-backfill');
-  if (backfillBtn) backfillBtn.onclick = async () => {
-    backfillBtn.disabled = true;
-    const users = await fetchApprovedUsers();
-    backfillBtn.disabled = false;
-    if (!users) return;
-    openAdminEntryModal(me, null, { users, defaultDay: addDaysISO(TODAY, -1), onSaved: jumpScheduleTo });
-  };
-  document.getElementById('grid').addEventListener('pointerdown', onGridPointerDown);
-  if (!pointerWired) {
-    document.addEventListener('pointermove', onPointerMove, { passive: false });
-    document.addEventListener('pointerup', onPointerUp);
-    document.addEventListener('pointercancel', cancelDrag);
-    // Reliably stop the page from scrolling while a touch drag-select is active.
-    document.addEventListener('touchmove', (e) => {
-      if (drag.active && drag.pointerType === 'touch') e.preventDefault();
-    }, { passive: false });
-    pointerWired = true;
-  }
-  loadSchedule();
-}
-
-// ---- Drag-to-select multiple days ----------------------------------------
-function cellFromPoint(x, y) {
-  const el = document.elementFromPoint(x, y);
-  return el ? el.closest('.cell') : null;
-}
-
-// Selectable (today or later) ISO days between two cells, in calendar order.
-function rangeIsos(anchorIso, currentIso) {
-  const isos = sched.cells.map(toISO);
-  const ai = isos.indexOf(anchorIso), ci = isos.indexOf(currentIso);
-  if (ai < 0 || ci < 0) return [anchorIso].filter((d) => d >= TODAY);
-  const [lo, hi] = ai <= ci ? [ai, ci] : [ci, ai];
-  return isos.slice(lo, hi + 1).filter((d) => d >= TODAY);
-}
-
-function paintSelection() {
-  const grid = document.getElementById('grid');
-  if (!grid) return;
-  const multi = sched.selection.length > 1;
-  const set = new Set(sched.selection);
-  grid.querySelectorAll('.cell').forEach((c) => {
-    c.classList.toggle('range', multi && set.has(c.dataset.iso));
-  });
-}
-
-function cancelDrag() {
-  clearTimeout(drag.timer);
-  drag.timer = null;
-  drag.anchor = null;
-  drag.active = false;
-  const grid = document.getElementById('grid');
-  if (grid) grid.style.touchAction = '';
-}
-
-function onGridPointerDown(e) {
-  const cell = e.target.closest('.cell');
-  if (!cell || e.button === 1 || e.button === 2) return;
-  const iso = cell.dataset.iso;
-  drag.anchor = iso;
-  drag.pointerType = e.pointerType;
-  drag.startX = e.clientX;
-  drag.startY = e.clientY;
-  drag.active = false;
-  clearTimeout(drag.timer);
-  sched.selection = [];
-  paintSelection();
-
-  if (e.pointerType === 'touch') {
-    // Press-and-hold to begin a selection (so a normal swipe still scrolls).
-    drag.timer = setTimeout(() => {
-      drag.active = true;
-      sched.selection = rangeIsos(iso, iso);
-      paintSelection();
-      const grid = document.getElementById('grid');
-      if (grid) grid.style.touchAction = 'none';
-      if (navigator.vibrate) navigator.vibrate(12);
-    }, 300);
-  } else {
-    drag.active = true; // mouse/pen: start immediately
-  }
-}
-
-function onPointerMove(e) {
-  if (!drag.anchor) return;
-  if (!drag.active) {
-    // touch, pre-hold: a real move means the user is scrolling, so bail out
-    if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 10) cancelDrag();
-    return;
-  }
-  if (drag.pointerType === 'touch') e.preventDefault();
-  const cell = cellFromPoint(e.clientX, e.clientY);
-  if (!cell || !cell.dataset.iso) return;
-  const next = rangeIsos(drag.anchor, cell.dataset.iso);
-  if (next.length !== sched.selection.length || next[next.length - 1] !== sched.selection[sched.selection.length - 1]) {
-    sched.selection = next;
-    paintSelection();
-  }
-}
-
-function onPointerUp() {
-  if (!drag.anchor) return;
-  const anchor = drag.anchor;
-  const wasActive = drag.active;
-  cancelDrag();
-  if (wasActive && sched.selection.length > 1) {
-    renderPanel(); // bulk panel
-  } else {
-    sched.selection = [];
-    selectDay(anchor); // plain click / tap → single day
-  }
-}
-
-function indexRows() {
-  const m = new Map();
-  for (const r of sched.rows) {
-    if (!m.has(r.day)) m.set(r.day, []);
-    m.get(r.day).push(r);
-  }
-  sched.byDay = m;
-}
-
-// Company events overlapping the visible window [from, to].
-async function fetchEvents(from, to) {
-  const { data, error } = await supabase
-    .from('events')
-    .select('id, title, kind, starts_on, ends_on, start_time, end_time, location, notes')
-    .lte('starts_on', to)
-    .gte('ends_on', from)
-    .order('starts_on', { ascending: true })
-    .order('start_time', { ascending: true, nullsFirst: true });
-  if (error) throw error;
-  return data || [];
-}
-
-// Expand each (possibly multi-day) event onto every visible day it covers.
-function indexEvents() {
-  const m = new Map();
-  if (!sched.cells.length) { sched.eventsByDay = m; return; }
-  const firstIso = toISO(sched.cells[0]);
-  const lastIso = toISO(sched.cells[sched.cells.length - 1]);
-  for (const ev of sched.events) {
-    let d = ev.starts_on < firstIso ? firstIso : ev.starts_on;
-    const end = (ev.ends_on || ev.starts_on) > lastIso ? lastIso : (ev.ends_on || ev.starts_on);
-    while (d <= end) {
-      if (!m.has(d)) m.set(d, []);
-      m.get(d).push(ev);
-      d = addDaysISO(d, 1);
-    }
-  }
-  sched.eventsByDay = m;
-}
-
-function shiftMonth(delta) {
-  let m = sched.view.month + delta;
-  let y = sched.view.year;
-  if (m < 0) { m = 11; y--; }
-  if (m > 11) { m = 0; y++; }
-  sched.view = { year: y, month: m };
-  loadSchedule();
-}
-
-async function loadSchedule() {
-  sched.selection = [];
-  cancelDrag();
-  sched.cells = gridCells(sched.view.year, sched.view.month);
-  const from = toISO(sched.cells[0]);
-  const to = toISO(sched.cells[sched.cells.length - 1]);
-
-  let data;
-  try {
-    data = await fetchDays(from, to);
-  } catch (err) {
-    const grid = document.getElementById('grid');
-    if (grid) grid.innerHTML = `<div class="empty" style="grid-column:1/-1">Couldn't load schedule: ${esc(err.message)}</div>`;
-    return;
-  }
-  // Events are optional — if the table isn't there yet, the calendar still works.
-  let events = [];
-  try { events = await fetchEvents(from, to); } catch { events = []; }
-  sched.rows = data;
-  sched.events = events;
-  indexRows();
-  indexEvents();
-
-  const todayInView = new Date().getFullYear() === sched.view.year && new Date().getMonth() === sched.view.month;
-  sched.selectedDay = sched.pendingSelect || (todayInView ? TODAY : toISO(new Date(sched.view.year, sched.view.month, 1)));
-  sched.pendingSelect = null;
-  renderAll();
-}
-
-function renderAll() {
-  renderStats();
-  renderCalendar();
-  renderPanel();
-  updateTopStack(sched.rows);
-}
-
+// A small stat tile (shared by the Reviews page and the Board). id => clickable.
 function statCard(label, value, sub, id) {
   const open = id ? ` id="stat-${id}" style="cursor:pointer"` : '';
   return `<div class="stat"${open}>
@@ -1332,506 +821,147 @@ function statCard(label, value, sub, id) {
   </div>`;
 }
 
-function renderStats() {
-  const el = document.getElementById('stats');
-  if (!el) return;
+// ===========================================================================
+// Events view — company events, off-sites, holidays & socials.
+// Everyone sees them; admins add/edit them (times, location, notes + an image).
+// ===========================================================================
+const eventsState = { rows: [] };
 
-  const monthRows = sched.rows.filter((r) => {
-    const [y, m] = r.day.split('-').map(Number);
-    return y === sched.view.year && m - 1 === sched.view.month;
-  });
-  const myInMonth = monthRows.filter((r) => r.user_id === me.id && kindOf(r) === 'in').length;
-  const todayAll = sched.byDay.get(TODAY) || [];
-  const todayIn = todayAll.filter((a) => kindOf(a) === 'in');
-  const todayRemote = todayAll.filter((a) => kindOf(a) === 'remote').length;
-  const todayVac = todayAll.filter((a) => kindOf(a) === 'vacation').length;
-  const todaySick = todayAll.filter((a) => kindOf(a) === 'sick').length;
-
-  const dow = [0, 0, 0, 0, 0, 0, 0];
-  for (const r of monthRows) if (kindOf(r) === 'in') dow[new Date(`${r.day}T00:00:00`).getDay()]++;
-  let bestWd = -1, bestN = 0;
-  for (let i = 0; i < 7; i++) if (dow[i] > bestN) { bestN = dow[i]; bestWd = i; }
-
-  const todayAvatars =
-    todayIn.slice(0, 5).map((a) => avatarHTML(a.display_name, a.user_id === me.id, 'sm', a.avatar_url)).join('') +
-    (todayIn.length > 5 ? `<span class="avatar sm more">+${todayIn.length - 5}</span>` : '');
-  const outTotal = todayVac + todaySick;
-  const remoteNote = todayRemote ? `<span class="muted-mini" style="margin-left:8px;">+${todayRemote} remote</span>` : '';
-  const inSub = todayAvatars
-    ? `<div class="avatar-stack">${todayAvatars}</div>${remoteNote}`
-    : (todayRemote ? `<span class="muted-mini">${todayRemote} working remote</span>` : '<span class="muted-mini">No one yet — be the first</span>');
-
-  el.innerHTML = `
-    ${statCard('In office today', todayIn.length, inSub, 'today')}
-    ${statCard('Out today', outTotal, `<span class="muted-mini">${outTotal ? `${todayVac} on vacation · ${todaySick} sick` : 'everyone\'s in'}</span>`)}
-    ${statCard('You this month', myInMonth, `<span class="muted-mini">in-office day${myInMonth === 1 ? '' : 's'}</span>`)}
-    ${statCard('Most popular', bestWd >= 0 ? WD_PLURAL[bestWd] : '—', bestWd >= 0 ? `<span class="muted-mini">${bestN} in-office visit${bestN === 1 ? '' : 's'}</span>` : '<span class="muted-mini">no bookings yet</span>')}`;
-
-  const tc = document.getElementById('stat-today');
-  if (tc) tc.onclick = () => {
-    const n = new Date();
-    if (n.getFullYear() !== sched.view.year || n.getMonth() !== sched.view.month) {
-      sched.view = { year: n.getFullYear(), month: n.getMonth() };
-      sched.pendingSelect = TODAY;
-      loadSchedule();
-    } else selectDay(TODAY);
-  };
+// All events, soonest first. select('*') so a database missing the newer
+// image_path column still loads (that field just reads back undefined).
+async function fetchEvents() {
+  const { data, error } = await supabase
+    .from('events')
+    .select('*')
+    .order('starts_on', { ascending: true })
+    .order('start_time', { ascending: true, nullsFirst: true });
+  if (error) throw error;
+  return data || [];
 }
 
-const matchesSearch = (a) =>
-  !ui.search || (a.display_name || '').toLowerCase().includes(ui.search);
+function eventImageUrl(path) {
+  if (!path) return '';
+  const { data } = supabase.storage.from('event-images').getPublicUrl(path);
+  return data.publicUrl;
+}
 
-function renderCalendar() {
-  const title = document.getElementById('cal-title');
-  if (title) title.textContent = `${MONTHS[sched.view.month]} ${sched.view.year}`;
-  const grid = document.getElementById('grid');
-  if (!grid) return;
-
-  grid.innerHTML = '';
-  const multi = sched.selection.length > 1;
-  const selSet = new Set(multi ? sched.selection : []);
-  for (const d of sched.cells) {
-    const iso = toISO(d);
-    const inMonth = d.getMonth() === sched.view.month;
-    const list = sched.byDay.get(iso) || [];
-    const mine = list.some((a) => a.user_id === me.id);
-
-    const cell = document.createElement('div');
-    cell.dataset.iso = iso;
-    cell.className = 'cell'
-      + (inMonth ? '' : ' muted')
-      + (iso === TODAY ? ' today' : '')
-      + (iso < TODAY ? ' past' : '')
-      + (mine ? ' mine' : '')
-      + (multi && selSet.has(iso) ? ' range' : '')
-      + (!multi && iso === sched.selectedDay ? ' selected' : '');
-
-    const ordered = list.slice().sort(entrySort);
-    const chips = ordered.slice(0, 3).map((a) => {
-      const meFlag = a.user_id === me.id;
-      const k = kindOf(a);
-      const label = meFlag ? 'You' : shortName(a.display_name);
-      const dot = k === 'in'
-        ? (meFlag ? 'var(--accent)' : personColor(a.display_name))
-        : k === 'remote' ? 'var(--remote)'
-        : k === 'vacation' ? 'var(--vac)' : 'var(--amber)';
-      let body, tip;
-      if (k === 'in') {
-        const t = a.start_time ? `<span class="evt-t">${esc(fmtCompactRange(a.start_time, a.end_time))}</span> ` : '';
-        body = `${t}${esc(label)}`;
-        tip = a.start_time ? `${a.display_name} · ${fmtRangePlain(a.start_time, a.end_time)}` : a.display_name;
-      } else {
-        body = `${KIND_EMOJI[k]} ${esc(label)}`;
-        tip = `${a.display_name} · ${KIND_LABEL[k]}` +
-          (k === 'remote' && a.start_time ? ` · ${fmtRangePlain(a.start_time, a.end_time)}` : '');
-      }
-      const dim = matchesSearch(a) ? '' : ' dim';
-      return `<span class="evt ${k}${meFlag ? ' me' : ''}${dim}" title="${esc(tip)}"><span class="dot" style="background:${dot}"></span><span class="evt-body">${body}</span></span>`;
-    }).join('');
-    const more = list.length > 3 ? `<span class="evt more"><span class="evt-body">+${list.length - 3}</span></span>` : '';
-
-    // Company events sit above the people, with a distinct banner style.
-    const dayEvents = sched.eventsByDay.get(iso) || [];
-    const evChips = dayEvents.map((ev) => {
-      const ek = eventKindOf(ev);
-      const tip = `${EVENT_KIND[ek].label}: ${ev.title}` +
-        (ev.start_time ? ` · ${fmtRangePlain(ev.start_time, ev.end_time)}` : '') +
-        (ev.location ? ` · ${ev.location}` : '');
-      return `<span class="evt ev-${ek} is-event" title="${esc(tip)}"><span class="evt-body">${EVENT_KIND[ek].emoji} ${esc(ev.title)}</span></span>`;
-    }).join('');
-
-    cell.innerHTML = `
-      <div class="cell-top"><span class="num">${d.getDate()}</span></div>
-      <div class="evts">${evChips}${chips}${more}</div>`;
-    grid.appendChild(cell);
+// "Mon, Jul 6, 2026" for a single day, or "Jul 6 – 8, 2026" across a range.
+function fmtEventDate(ev) {
+  const s = ev.starts_on, e = ev.ends_on || ev.starts_on;
+  if (s === e) {
+    return new Date(`${s}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
   }
+  const sd = new Date(`${s}T00:00:00`), ed = new Date(`${e}T00:00:00`);
+  const sameYear = sd.getFullYear() === ed.getFullYear();
+  const sameMonth = sameYear && sd.getMonth() === ed.getMonth();
+  const sStr = sd.toLocaleDateString(undefined, sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+  const eStr = ed.toLocaleDateString(undefined, sameMonth ? { day: 'numeric', year: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+  return `${sStr} – ${eStr}`;
 }
 
-function selectDay(iso) {
-  panelEditing = false;
-  sched.selection = [];
-  const [y, m] = iso.split('-').map(Number);
-  if (y !== sched.view.year || m - 1 !== sched.view.month) {
-    sched.view = { year: y, month: m - 1 };
-    sched.pendingSelect = iso;
-    loadSchedule();
-    return;
-  }
-  sched.selectedDay = iso;
-  renderCalendar();
-  renderPanel();
+function fmtEventTime(ev) {
+  if (!ev.start_time) return 'All day';
+  return ev.end_time ? fmtRangePlain(ev.start_time, ev.end_time) : fmt12(ev.start_time);
 }
 
-// Events block shown at the top of the day panel. Everyone sees the events;
-// admins get an edit pencil on each and a "+ Add" affordance.
-function eventsPanelHTML(iso) {
-  const isAdmin = me.role === 'admin';
-  const dayEvents = sched.eventsByDay.get(iso) || [];
-  if (!dayEvents.length && !isAdmin) return '';
-  const rows = dayEvents.map((ev) => {
-    const ek = eventKindOf(ev);
-    const when = ev.start_time ? fmtRangePlain(ev.start_time, ev.end_time) : 'All day';
-    const multi = ev.ends_on && ev.ends_on !== ev.starts_on;
-    const meta = [when, ev.location].filter(Boolean).join(' · ') + (multi ? ` · thru ${fmtDate(ev.ends_on)}` : '');
-    return `<button class="ev-row ev-${ek}" type="button"${isAdmin ? ` data-edit-event="${esc(ev.id)}"` : ' disabled'}>
-        <span class="ev-emoji">${EVENT_KIND[ek].emoji}</span>
-        <span class="ev-row-text"><span class="ev-title">${esc(ev.title)}</span><span class="ev-meta">${esc(meta)}</span></span>
-        ${isAdmin ? `<span class="ev-edit">${icon('edit', 'ic sm')}</span>` : ''}
-      </button>`;
-  }).join('');
+function eventCardHTML(ev, isAdmin) {
+  const k = eventKindOf(ev);
+  const meta = EVENT_KIND[k];
+  const img = eventImageUrl(ev.image_path);
   return `
+    <div class="ev-card ev-${k}${isAdmin ? ' clickable' : ''}" data-ev="${esc(ev.id)}"${isAdmin ? ' role="button" tabindex="0"' : ''}>
+      ${img ? `<div class="ev-img"><img src="${esc(img)}" alt="${esc(ev.title)}" loading="lazy" /></div>` : ''}
+      <div class="ev-body">
+        <span class="ev-kind ev-kind-${k}">${meta.emoji} ${meta.label}</span>
+        <h3 class="ev-title">${esc(ev.title)}</h3>
+        <div class="ev-lines">
+          <div class="ev-line">${icon('cal', 'ic sm')}<span>${esc(fmtEventDate(ev))}</span></div>
+          <div class="ev-line">${icon('clock', 'ic sm')}<span>${esc(fmtEventTime(ev))}</span></div>
+          ${ev.location ? `<div class="ev-line">${icon('pin', 'ic sm')}<span>${esc(ev.location)}</span></div>` : ''}
+        </div>
+        ${ev.notes ? `<p class="ev-notes">${esc(ev.notes)}</p>` : ''}
+      </div>
+    </div>`;
+}
+
+function viewEvents(view) {
+  const isAdmin = me.role === 'admin';
+  view.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1>Events</h1>
+        <p class="subtitle" style="margin:2px 0 0;">Company events, off-sites, holidays &amp; socials — everything coming up.</p>
+      </div>
+      ${isAdmin ? `<div class="th-actions"><button class="btn primary" id="ev-add" type="button">${icon('plus', 'ic sm')}<span>Add event</span></button></div>` : ''}
+    </div>
+    <div id="ev-wrap"><div class="spinner">Loading…</div></div>`;
+  const addBtn = view.querySelector('#ev-add');
+  if (addBtn) addBtn.onclick = () => openEventModal(null);
+  loadEvents();
+}
+
+async function loadEvents() {
+  const wrap = document.getElementById('ev-wrap');
+  if (!wrap) return;
+  try {
+    eventsState.rows = await fetchEvents();
+  } catch (e) {
+    wrap.innerHTML = `<div class="card pad"><div class="empty">Couldn't load events: ${esc(e.message)}</div></div>`;
+    return;
+  }
+  renderEvents();
+}
+
+function renderEvents() {
+  const wrap = document.getElementById('ev-wrap');
+  if (!wrap) return;
+  const isAdmin = me.role === 'admin';
+  const rows = eventsState.rows;
+  if (!rows.length) {
+    wrap.innerHTML = `<div class="card pad"><div class="empty">No events yet.${isAdmin ? ' Hit <strong>Add event</strong> to post the first one.' : ' Your admin will post them here.'}</div></div>`;
+    return;
+  }
+  const upcoming = rows.filter((e) => (e.ends_on || e.starts_on) >= TODAY);
+  const past = rows.filter((e) => (e.ends_on || e.starts_on) < TODAY).reverse(); // most recent first
+  const section = (title, list, emptyMsg) => `
     <div class="ev-section">
-      <div class="ev-section-head"><span>Events</span>${isAdmin ? '<button class="link-btn" id="panel-add-event" type="button">+ Add</button>' : ''}</div>
-      ${dayEvents.length ? rows : '<div class="empty" style="padding:6px 2px;">Nothing scheduled — add an event.</div>'}
+      <div class="ev-sec-head"><h2>${title}</h2><span class="ev-count">${list.length}</span></div>
+      ${list.length ? `<div class="ev-grid">${list.map((e) => eventCardHTML(e, isAdmin)).join('')}</div>` : `<div class="muted-mini" style="padding:2px;">${emptyMsg}</div>`}
     </div>`;
-}
-
-function renderPanel() {
-  const panel = document.getElementById('day-panel');
-  if (!panel) return;
-  if (sched.selection.length > 1) return renderBulkPanel(panel);
-  const iso = sched.selectedDay;
-  const dObj = new Date(`${iso}T00:00:00`);
-  const isPast = iso < TODAY;
-  const isToday = iso === TODAY;
-  const list = (sched.byDay.get(iso) || []).slice().sort(entrySort);
-  const myRow = list.find((a) => a.user_id === me.id);
-  const mine = !!myRow;
-  const inCount = list.filter((a) => kindOf(a) === 'in').length;
-  const outCount = list.length - inCount;
-
-  const attendeeHTML = list.length
-    ? list.map((a) => {
-        const meFlag = a.user_id === me.id;
-        const k = kindOf(a);
-        let detail;
-        if (k === 'in') {
-          detail = a.start_time
-            ? `<span class="att-hours">${esc(fmtRangePlain(a.start_time, a.end_time))}</span>`
-            : '<span class="att-hours muted-mini">no hours set</span>';
-        } else if (k === 'remote') {
-          detail = `<span class="att-tag remote">${KIND_EMOJI.remote} Remote</span>` +
-            (a.start_time ? `<span class="att-hours">${esc(fmtRangePlain(a.start_time, a.end_time))}</span>` : '');
-        } else {
-          detail = `<span class="att-tag ${k}">${KIND_EMOJI[k]} ${KIND_LABEL[k]}</span>`;
-        }
-        const dim = matchesSearch(a) ? '' : ' dim';
-        return `<div class="att${dim}">${avatarHTML(a.display_name, meFlag, '', a.avatar_url)}<span class="att-name">${esc(a.display_name || 'Someone')}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>${detail}</div>`;
-      }).join('')
-    : '<div class="empty" style="padding:10px 2px">Nobody scheduled yet.</div>';
-
-  let actionHTML;
-  if (isPast) {
-    actionHTML = me.role === 'admin'
-      ? `<button class="btn ghost full" type="button" id="backfill-day">${icon('plus', 'ic sm')}<span>Log this day (admin)</span></button>`
-      : '<button class="btn ghost full" type="button" disabled>This day has passed</button>';
-  } else if (!mine || panelEditing) {
-    const curKind = (panelEditing && myRow) ? kindOf(myRow) : 'in';
-    const ds = myRow && myRow.start_time ? hhmm(myRow.start_time) : '09:00';
-    const de = myRow && myRow.end_time ? hhmm(myRow.end_time) : '17:00';
-    actionHTML = `
-      <div class="entry-form">
-        <div class="kind-select">
-          <button type="button" class="kind-opt${curKind === 'in' ? ' active' : ''}" data-kind="in">🏢 In</button>
-          <button type="button" class="kind-opt${curKind === 'remote' ? ' active' : ''}" data-kind="remote">🏠 Remote</button>
-          <button type="button" class="kind-opt${curKind === 'vacation' ? ' active' : ''}" data-kind="vacation">🌴 Vacation</button>
-          <button type="button" class="kind-opt${curKind === 'sick' ? ' active' : ''}" data-kind="sick">🤒 Sick</button>
-        </div>
-        <div class="hours-wrap"${hasHours(curKind) ? '' : ' style="display:none"'}>
-          <div class="hours-row">
-            <div><label>From</label><input type="time" id="h-start" value="${ds}"></div>
-            <div><label>To</label><input type="time" id="h-end" value="${de}"></div>
-          </div>
-          <div class="presets">
-            <button type="button" class="chip-btn" data-preset="09:00|17:00">9–5</button>
-            <button type="button" class="chip-btn" data-preset="08:00|16:00">8–4</button>
-            <button type="button" class="chip-btn" data-preset="00:00|23:59">All day</button>
-          </div>
-          <p class="muted-mini" style="margin:8px 0 0;">Open 24/7 — any hours, overnight too.</p>
-        </div>
-        <div id="h-msg" class="msg"></div>
-        <div class="form-actions">
-          ${mine ? '<button class="btn ghost" type="button" id="h-cancel">Cancel</button>' : ''}
-          <button class="btn primary" type="button" id="h-save">Save</button>
-        </div>
-      </div>`;
-  } else {
-    const k = kindOf(myRow);
-    const summary = k === 'in'
-      ? `You're in <strong>${fmtRange(myRow.start_time, myRow.end_time)}</strong>`
-      : k === 'remote'
-      ? `${KIND_EMOJI.remote} You're <strong>working remote</strong>${myRow.start_time ? ` <span class="muted-mini">· ${fmtRangePlain(myRow.start_time, myRow.end_time)}</span>` : ''}`
-      : `${KIND_EMOJI[k]} You're <strong>${k === 'vacation' ? 'on vacation' : 'off sick'}</strong>`;
-    actionHTML = `
-      <div class="your-booking">
-        <div class="yb-hours yb-${k}">${summary}</div>
-        <div class="form-actions">
-          <button class="btn ghost" type="button" id="edit-hours">Change</button>
-          <button class="btn danger" type="button" id="remove-me">Remove me</button>
-        </div>
-      </div>`;
+  wrap.innerHTML = section('Upcoming', upcoming, 'Nothing coming up right now.') + (past.length ? section('Earlier', past, '') : '');
+  if (isAdmin) {
+    wrap.querySelectorAll('.ev-card').forEach((el) => {
+      const ev = rows.find((x) => x.id === el.dataset.ev);
+      if (!ev) return;
+      el.onclick = () => openEventModal(ev);
+      el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openEventModal(ev); } };
+    });
   }
+}
 
-  panel.innerHTML = `
-    <div class="card pad panel">
-      <div class="panel-head">
-        <div>
-          <div class="panel-weekday">${dObj.toLocaleDateString(undefined, { weekday: 'long' })} ${isToday ? '<span class="badge today-badge">Today</span>' : ''}</div>
-          <div class="panel-date">${dObj.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</div>
-        </div>
-        <div class="panel-count"><span class="big">${inCount}</span><span class="muted-mini">in office${outCount ? ` · ${outCount} out` : ''}</span></div>
-      </div>
-      ${eventsPanelHTML(iso)}
-      ${actionHTML}
-      <div class="att-list">${attendeeHTML}</div>
+// Compact upcoming-events list for the dashboard card.
+function eventRowHTML(ev) {
+  const k = eventKindOf(ev);
+  const d = new Date(`${ev.starts_on}T00:00:00`);
+  return `
+    <div class="de-row">
+      <span class="de-date"><span class="de-num">${d.getDate()}</span><span class="de-mon">${MONTHS[d.getMonth()].slice(0, 3).toUpperCase()}</span></span>
+      <span class="de-info"><span class="de-title">${EVENT_KIND[k].emoji} ${esc(ev.title)}</span><span class="de-sub">${esc(fmtEventTime(ev))}${ev.location ? ` · ${esc(ev.location)}` : ''}</span></span>
     </div>`;
-
-  panel.querySelectorAll('.kind-opt').forEach((b) => {
-    b.onclick = () => {
-      panel.querySelectorAll('.kind-opt').forEach((x) => x.classList.remove('active'));
-      b.classList.add('active');
-      const hw = panel.querySelector('.hours-wrap');
-      if (hw) hw.style.display = hasHours(b.dataset.kind) ? '' : 'none';
-    };
-  });
-  panel.querySelectorAll('.chip-btn').forEach((b) => {
-    b.onclick = () => {
-      const [s, e] = b.dataset.preset.split('|');
-      panel.querySelector('#h-start').value = s;
-      panel.querySelector('#h-end').value = e;
-    };
-  });
-  const saveBtn = panel.querySelector('#h-save');
-  if (saveBtn) saveBtn.onclick = () => {
-    const kind = panel.querySelector('.kind-opt.active').dataset.kind;
-    const msg = panel.querySelector('#h-msg');
-    if (hasHours(kind)) {
-      const s = panel.querySelector('#h-start').value;
-      const e = panel.querySelector('#h-end').value;
-      if (!s || !e) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
-      if (s === e) { msg.textContent = "Start and end times can't be the same."; msg.className = 'msg show error'; return; }
-      saveEntry(iso, kind, s, e);
-    } else {
-      saveEntry(iso, kind, null, null);
-    }
-  };
-  const cancelBtn = panel.querySelector('#h-cancel');
-  if (cancelBtn) cancelBtn.onclick = () => { panelEditing = false; renderPanel(); };
-  const editBtn = panel.querySelector('#edit-hours');
-  if (editBtn) editBtn.onclick = () => { panelEditing = true; renderPanel(); };
-  const rmBtn = panel.querySelector('#remove-me');
-  if (rmBtn) rmBtn.onclick = () => removeMe(iso);
-  const backfill = panel.querySelector('#backfill-day');
-  if (backfill) backfill.onclick = async () => {
-    backfill.disabled = true;
-    const users = await fetchApprovedUsers();
-    backfill.disabled = false;
-    if (!users) return;
-    openAdminEntryModal(me, null, { users, defaultDay: iso, onSaved: jumpScheduleTo });
-  };
-
-  const addEvBtn = panel.querySelector('#panel-add-event');
-  if (addEvBtn) addEvBtn.onclick = () => openEventModal(null, iso);
-  panel.querySelectorAll('[data-edit-event]').forEach((b) => {
-    b.onclick = () => {
-      const ev = sched.events.find((x) => x.id === b.dataset.editEvent);
-      if (ev) openEventModal(ev, iso);
-    };
-  });
 }
 
-// Bulk scheduler shown when more than one day is selected via drag.
-function renderBulkPanel(panel) {
-  const sel = sched.selection.slice().sort();
-  const n = sel.length;
-  const first = new Date(`${sel[0]}T00:00:00`);
-  const last = new Date(`${sel[n - 1]}T00:00:00`);
-  const sameMonth = first.getMonth() === last.getMonth() && first.getFullYear() === last.getFullYear();
-  const firstS = first.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  const lastS = last.toLocaleDateString(undefined, sameMonth ? { weekday: 'short', day: 'numeric' } : { weekday: 'short', month: 'short', day: 'numeric' });
-  const mineCount = sel.filter((iso) => (sched.byDay.get(iso) || []).some((a) => a.user_id === me.id)).length;
-
-  panel.innerHTML = `
-    <div class="card pad panel">
-      <div class="panel-head">
-        <div>
-          <div class="panel-weekday">${n} days selected</div>
-          <div class="panel-date">${firstS} – ${lastS}</div>
-        </div>
-        <button class="btn ghost sm" id="bulk-clear" type="button">Clear</button>
-      </div>
-      <div class="entry-form">
-        <div class="kind-select">
-          <button type="button" class="kind-opt active" data-kind="in">🏢 In</button>
-          <button type="button" class="kind-opt" data-kind="remote">🏠 Remote</button>
-          <button type="button" class="kind-opt" data-kind="vacation">🌴 Vacation</button>
-          <button type="button" class="kind-opt" data-kind="sick">🤒 Sick</button>
-        </div>
-        <div class="hours-wrap">
-          <div class="hours-row">
-            <div><label>From</label><input type="time" id="h-start" value="09:00"></div>
-            <div><label>To</label><input type="time" id="h-end" value="17:00"></div>
-          </div>
-          <div class="presets">
-            <button type="button" class="chip-btn" data-preset="09:00|17:00">9–5</button>
-            <button type="button" class="chip-btn" data-preset="08:00|16:00">8–4</button>
-            <button type="button" class="chip-btn" data-preset="00:00|23:59">All day</button>
-          </div>
-          <p class="muted-mini" style="margin:8px 0 0;">Applied to all ${n} selected days.</p>
-        </div>
-        <div id="h-msg" class="msg"></div>
-        <div class="form-actions">
-          <button class="btn primary" type="button" id="bulk-save">Save ${n} days</button>
-        </div>
-        ${mineCount ? `<button class="btn ghost full" type="button" id="bulk-remove" style="margin-top:8px;">Remove me from ${mineCount} of these</button>` : ''}
-      </div>
-    </div>`;
-
-  panel.querySelectorAll('.kind-opt').forEach((b) => {
-    b.onclick = () => {
-      panel.querySelectorAll('.kind-opt').forEach((x) => x.classList.remove('active'));
-      b.classList.add('active');
-      const hw = panel.querySelector('.hours-wrap');
-      if (hw) hw.style.display = hasHours(b.dataset.kind) ? '' : 'none';
-    };
-  });
-  panel.querySelectorAll('.chip-btn').forEach((b) => {
-    b.onclick = () => {
-      const [s, e] = b.dataset.preset.split('|');
-      panel.querySelector('#h-start').value = s;
-      panel.querySelector('#h-end').value = e;
-    };
-  });
-  panel.querySelector('#bulk-clear').onclick = () => clearSelection();
-  panel.querySelector('#bulk-save').onclick = () => {
-    const kind = panel.querySelector('.kind-opt.active').dataset.kind;
-    const msg = panel.querySelector('#h-msg');
-    if (hasHours(kind)) {
-      const s = panel.querySelector('#h-start').value;
-      const e = panel.querySelector('#h-end').value;
-      if (!s || !e) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
-      if (s === e) { msg.textContent = "Start and end times can't be the same."; msg.className = 'msg show error'; return; }
-      bulkSave(kind, s, e);
-    } else {
-      bulkSave(kind, null, null);
-    }
-  };
-  const rm = panel.querySelector('#bulk-remove');
-  if (rm) rm.onclick = () => bulkRemove();
-}
-
-function clearSelection() {
-  const first = sched.selection[0];
-  sched.selection = [];
-  if (first) sched.selectedDay = first;
-  renderCalendar();
-  renderPanel();
-}
-
-async function bulkSave(kind, start, end) {
-  const days = sched.selection.slice();
-  if (!days.length) return;
-  const rows = days.map((iso) => ({
-    day: iso,
-    user_id: me.id,
-    display_name: me.full_name || me.email,
-    avatar_url: me.avatar_url || null,
-    kind,
-    start_time: hasHours(kind) ? start : null,
-    end_time: hasHours(kind) ? end : null,
-  }));
-  const daySet = new Set(days);
-  const snapshot = sched.rows;
-  sched.rows = sched.rows.filter((r) => !(r.user_id === me.id && daySet.has(r.day))).concat(rows);
-  sched.selection = [];
-  sched.selectedDay = days[0];
-  indexRows();
-  renderAll();
-
-  const { error } = await supabase.from('office_days').upsert(rows, { onConflict: 'user_id,day' });
-  if (error) {
-    sched.rows = snapshot;
-    indexRows();
-    renderAll();
-    alert(error.message);
+async function loadDashEvents() {
+  const box = document.getElementById('de-body');
+  if (!box) return;
+  let rows;
+  try { rows = await fetchEvents(); }
+  catch { box.innerHTML = '<div class="empty" style="padding:8px 2px">Couldn\'t load events.</div>'; return; }
+  const upcoming = rows.filter((e) => (e.ends_on || e.starts_on) >= TODAY).slice(0, 4);
+  if (!upcoming.length) {
+    box.innerHTML = `<div class="empty" style="padding:8px 2px">Nothing coming up${me.role === 'admin' ? ' — add one from the Events page.' : ' yet.'}</div>`;
     return;
   }
-  toast(`Scheduled ${days.length} day${days.length === 1 ? '' : 's'}`);
-}
-
-async function bulkRemove() {
-  const days = sched.selection.slice();
-  const daySet = new Set(days);
-  const removed = sched.rows.filter((r) => r.user_id === me.id && daySet.has(r.day));
-  if (!removed.length) return;
-  const snapshot = sched.rows;
-  sched.rows = sched.rows.filter((r) => !(r.user_id === me.id && daySet.has(r.day)));
-  sched.selection = [];
-  sched.selectedDay = days[0];
-  indexRows();
-  renderAll();
-
-  const { error } = await supabase.from('office_days').delete().eq('user_id', me.id).in('day', days);
-  if (error) {
-    sched.rows = snapshot;
-    indexRows();
-    renderAll();
-    alert(error.message);
-    return;
-  }
-  toast(`Removed you from ${removed.length} day${removed.length === 1 ? '' : 's'}`);
-}
-
-async function saveEntry(iso, kind, start, end) {
-  panelEditing = false;
-  const wasMine = (sched.byDay.get(iso) || []).some((a) => a.user_id === me.id);
-  const row = {
-    day: iso,
-    user_id: me.id,
-    display_name: me.full_name || me.email,
-    avatar_url: me.avatar_url || null,
-    kind,
-    start_time: hasHours(kind) ? start : null,
-    end_time: hasHours(kind) ? end : null,
-  };
-  const snapshot = sched.rows;
-  sched.rows = wasMine
-    ? sched.rows.map((r) => (r.day === iso && r.user_id === me.id) ? { ...r, ...row } : r)
-    : sched.rows.concat([row]);
-  indexRows();
-  renderAll();
-
-  const payload = { kind, start_time: row.start_time, end_time: row.end_time, display_name: row.display_name, avatar_url: row.avatar_url };
-  let error;
-  if (wasMine) {
-    ({ error } = await supabase.from('office_days').update(payload).eq('user_id', me.id).eq('day', iso));
-  } else {
-    ({ error } = await supabase.from('office_days').insert(row));
-    if (error && error.code === '23505') {
-      ({ error } = await supabase.from('office_days').update(payload).eq('user_id', me.id).eq('day', iso));
-    }
-  }
-  if (error) {
-    sched.rows = snapshot;
-    indexRows();
-    renderAll();
-    alert(error.message);
-  }
-}
-
-async function removeMe(iso) {
-  const prev = (sched.byDay.get(iso) || []).find((a) => a.user_id === me.id);
-  sched.rows = sched.rows.filter((r) => !(r.day === iso && r.user_id === me.id));
-  indexRows();
-  renderAll();
-
-  const { error } = await supabase.from('office_days').delete().eq('user_id', me.id).eq('day', iso);
-  if (error && prev) {
-    sched.rows = sched.rows.concat([prev]);
-    indexRows();
-    renderAll();
-    alert(error.message);
-  }
+  box.innerHTML = upcoming.map(eventRowHTML).join('');
 }
 
 // ===========================================================================
@@ -1945,18 +1075,15 @@ async function viewTeamDetail(view, uid) {
     <div class="spinner">Loading…</div>`;
   view.querySelector('#td-back').onclick = () => { ui.teamUser = null; setView('team'); };
 
-  let profile, days, revs;
+  let profile, revs;
   try {
-    const [pRes, dRes, rRes] = await Promise.all([
+    const [pRes, rRes] = await Promise.all([
       supabase.from('profiles').select('id, email, full_name, role, status, created_at, avatar_url').eq('id', uid).maybeSingle(),
-      supabase.from('office_days').select('day, start_time, end_time, kind').eq('user_id', uid).order('day', { ascending: true }),
       supabase.from('weekly_reviews').select('week_start, rating, note').eq('user_id', uid).order('week_start', { ascending: false }),
     ]);
     if (pRes.error) throw pRes.error;
-    if (dRes.error) throw dRes.error;
     if (rRes.error) throw rRes.error;
     profile = pRes.data;
-    days = dRes.data || [];
     revs = rRes.data || [];
   } catch (e) {
     view.innerHTML = `
@@ -1972,28 +1099,11 @@ async function viewTeamDetail(view, uid) {
     view.querySelector('#td-back3').onclick = () => { ui.teamUser = null; setView('team'); };
     return;
   }
-  renderTeamDetail(view, profile, days, revs);
+  renderTeamDetail(view, profile, revs);
 }
 
-function renderTeamDetail(view, p, days, revs) {
+function renderTeamDetail(view, p, revs) {
   const isSelf = p.id === me.id;
-  const inRows = days.filter((r) => kindOf(r) === 'in');
-  const ws = weekStartISO();
-  const we = addDaysISO(ws, 6);
-  const ty = new Date().getFullYear(), tm = new Date().getMonth();
-  const inWeek = inRows.filter((r) => r.day >= ws && r.day <= we);
-  const inMonth = inRows.filter((r) => { const [y, m] = r.day.split('-').map(Number); return y === ty && m - 1 === tm; });
-  const hoursMonth = inMonth.reduce((s, r) => s + entryHours(r), 0);
-  const hoursAll = inRows.reduce((s, r) => s + entryHours(r), 0);
-
-  let avgDays = 0, avgHours = 0, weeks = 0;
-  if (inRows.length) {
-    const first = inRows[0].day, last = inRows[inRows.length - 1].day;
-    const spanEnd = last > TODAY ? last : TODAY;
-    weeks = diffWeeks(first, spanEnd);
-    avgDays = inRows.length / weeks;
-    avgHours = hoursAll / weeks;
-  }
 
   const roleToggle = p.role === 'admin'
     ? `<button class="btn ghost sm" data-act="make-employee" data-id="${esc(p.id)}"${isSelf ? ' disabled' : ''}>Make employee</button>`
@@ -2002,32 +1112,6 @@ function renderTeamDetail(view, p, days, revs) {
     ? (isSelf ? '' : `<button class="btn danger sm" data-act="deny" data-id="${esc(p.id)}">Revoke access</button>`)
     : `<button class="btn green sm" data-act="approve" data-id="${esc(p.id)}">Approve</button>` +
       (p.status === 'pending' ? `<button class="btn danger sm" data-act="deny" data-id="${esc(p.id)}">Deny</button>` : '');
-
-  const metric = (label, value, sub) =>
-    `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${value}</div><div class="stat-sub"><span class="muted-mini">${sub}</span></div></div>`;
-
-  const sorted = days.slice().sort((a, b) => b.day.localeCompare(a.day));
-  const scheduleHTML = sorted.length
-    ? sorted.map((r) => {
-        const d = new Date(`${r.day}T00:00:00`);
-        const k = kindOf(r);
-        const when = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-        const detail = hasHours(k)
-          ? (r.start_time ? `${fmtRangePlain(r.start_time, r.end_time)} · ${fmtHours(entryHours(r))}` : 'no hours set')
-          : KIND_LABEL[k];
-        return `
-          <div class="sched-row${r.day < TODAY ? ' past' : ''}">
-            <div class="sched-when">
-              <span class="pill ${k}">${k === 'in' ? 'IN' : k === 'remote' ? 'REMOTE' : k === 'vacation' ? 'VAC' : 'SICK'}</span>
-              <div><div class="sched-date">${when}</div><div class="muted-mini">${esc(detail)}</div></div>
-            </div>
-            <div class="actions">
-              <button class="btn ghost sm" data-edit-day="${esc(r.day)}">Edit</button>
-              <button class="btn danger sm" data-del-day="${esc(r.day)}">Remove</button>
-            </div>
-          </div>`;
-      }).join('')
-    : '<div class="empty">No scheduled days yet.</div>';
 
   const curWs = weekStartISO();
   const reviewedThisWeek = revs.some((r) => r.week_start === curWs);
@@ -2061,29 +1145,11 @@ function renderTeamDetail(view, p, days, revs) {
     </div>
 
     <div class="section">
-      <div class="section-head"><h2 style="margin:0">Attendance</h2></div>
-      <div class="stats metric-grid">
-        ${metric('Days this week', inWeek.length, 'in office')}
-        ${metric('Days this month', inMonth.length, `${fmtHours(hoursMonth)} total`)}
-        ${metric('Days all time', inRows.length, `${fmtHours(hoursAll)} total`)}
-        ${metric('Avg days / week', avgDays ? avgDays.toFixed(1) : '0', weeks ? `over ${weeks} week${weeks === 1 ? '' : 's'}` : 'no data yet')}
-        ${metric('Avg hours / week', avgHours ? fmtHours(avgHours) : '0h', weeks ? `over ${weeks} week${weeks === 1 ? '' : 's'}` : 'no data yet')}
-        ${metric('Hours this month', fmtHours(hoursMonth), `across ${inMonth.length} day${inMonth.length === 1 ? '' : 's'}`)}
-        ${metric('Hours all time', fmtHours(hoursAll), `across ${inRows.length} day${inRows.length === 1 ? '' : 's'}`)}
-      </div>
-    </div>
-
-    <div class="section">
       <div class="section-head">
         <h2 style="margin:0">Weekly reviews</h2>
         <button class="btn primary sm" id="td-review" type="button">${reviewedThisWeek ? "Edit this week's" : 'Review this week'}</button>
       </div>
       <div class="card pad"><div class="sched-list">${reviewsHTML}</div></div>
-    </div>
-
-    <div class="section">
-      <div class="section-head"><h2 style="margin:0">Scheduled days</h2><button class="btn primary sm" id="td-add" type="button">+ Add day</button></div>
-      <div class="card pad"><div class="sched-list">${scheduleHTML}</div></div>
     </div>`;
 
   view.querySelector('#td-back').onclick = () => { ui.teamUser = null; setView('team'); };
@@ -2092,19 +1158,6 @@ function renderTeamDetail(view, p, days, revs) {
     openReviewModal(p, curWs, revs.find((r) => r.week_start === curWs) || null, () => refreshTeam());
   view.querySelectorAll('[data-review-week]').forEach((b) => {
     b.onclick = () => openReviewModal(p, b.dataset.reviewWeek, revs.find((r) => r.week_start === b.dataset.reviewWeek) || null, () => refreshTeam());
-  });
-  view.querySelector('#td-add').onclick = () => openAdminEntryModal(p, null);
-  view.querySelectorAll('[data-edit-day]').forEach((b) => {
-    b.onclick = () => openAdminEntryModal(p, days.find((r) => r.day === b.dataset.editDay) || null);
-  });
-  view.querySelectorAll('[data-del-day]').forEach((b) => {
-    b.onclick = async () => {
-      b.disabled = true;
-      const { error } = await supabase.from('office_days').delete().eq('user_id', p.id).eq('day', b.dataset.delDay);
-      if (error) { toast(error.message); b.disabled = false; return; }
-      toast('Day removed');
-      refreshTeam();
-    };
   });
 }
 
@@ -2117,126 +1170,6 @@ async function fetchApprovedUsers() {
     .order('full_name', { ascending: true });
   if (error) { toast(error.message); return null; }
   return data || [];
-}
-
-// Point the schedule calendar at a specific day (used after an admin backfill).
-function jumpScheduleTo(day) {
-  if (day) {
-    const [y, m] = day.split('-').map(Number);
-    sched.view = { year: y, month: m - 1 };
-    sched.pendingSelect = day;
-  }
-  loadSchedule();
-}
-
-// Admin: add or edit an office day (date + kind + hours). With opts.users it
-// shows a person picker so an admin can backfill for themselves or anyone;
-// the date field accepts past dates. Without opts it edits the fixed `profile`.
-function openAdminEntryModal(profile, row, opts = {}) {
-  const users = opts.users || null;            // when set, show a person picker
-  const onSaved = opts.onSaved || refreshTeam; // callback(savedDay) after save/remove
-  const editing = !!(row && row.kind);
-  const dayVal = row && row.day ? row.day : (opts.defaultDay || TODAY);
-  const defaultUserId = (profile && profile.id) || me.id;
-  const kind = editing ? kindOf(row) : 'in';
-  const s = row && row.start_time ? hhmm(row.start_time) : '09:00';
-  const e = row && row.end_time ? hhmm(row.end_time) : '17:00';
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal card pad">
-      <h2 style="margin-bottom:4px;">${editing ? 'Edit day' : 'Add a day'}</h2>
-      <p class="subtitle" style="margin-bottom:16px;">${users && !editing
-        ? 'Backfill an office day — past dates are allowed.'
-        : `For ${esc(profile.full_name || profile.email)}.`}</p>
-      ${users && !editing ? `
-        <label>Person</label>
-        <select id="ae-user" class="form-select" style="margin-bottom:14px;">
-          ${users.map((u) => `<option value="${esc(u.id)}"${u.id === defaultUserId ? ' selected' : ''}>${esc(u.full_name || u.email)}${u.id === me.id ? ' (you)' : ''}</option>`).join('')}
-        </select>` : ''}
-      <label>Date</label>
-      <input type="date" id="ae-date" value="${dayVal}"${editing ? ' disabled' : ''} />
-      ${users && !editing ? '<p class="muted-mini" style="margin:6px 0 0;">Pick any date, including days that have already passed.</p>' : ''}
-      <div class="kind-select" style="margin-top:14px;">
-        <button type="button" class="kind-opt${kind === 'in' ? ' active' : ''}" data-kind="in">🏢 In</button>
-        <button type="button" class="kind-opt${kind === 'remote' ? ' active' : ''}" data-kind="remote">🏠 Remote</button>
-        <button type="button" class="kind-opt${kind === 'vacation' ? ' active' : ''}" data-kind="vacation">🌴 Vacation</button>
-        <button type="button" class="kind-opt${kind === 'sick' ? ' active' : ''}" data-kind="sick">🤒 Sick</button>
-      </div>
-      <div class="hours-wrap"${hasHours(kind) ? '' : ' style="display:none"'}>
-        <div class="hours-row">
-          <div><label>From</label><input type="time" id="ae-start" value="${s}"></div>
-          <div><label>To</label><input type="time" id="ae-end" value="${e}"></div>
-        </div>
-        <div class="presets">
-          <button type="button" class="chip-btn" data-preset="09:00|17:00">9–5</button>
-          <button type="button" class="chip-btn" data-preset="08:00|16:00">8–4</button>
-          <button type="button" class="chip-btn" data-preset="00:00|23:59">All day</button>
-        </div>
-      </div>
-      <div id="ae-msg" class="msg"></div>
-      <div class="modal-foot">
-        ${editing ? '<button class="btn danger" id="ae-remove" type="button" style="margin-right:auto;">Remove</button>' : ''}
-        <button class="btn ghost" id="ae-cancel" type="button">Cancel</button>
-        <button class="btn primary" id="ae-save" type="button">Save</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  const close = () => overlay.remove();
-  const msg = overlay.querySelector('#ae-msg');
-  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
-  overlay.querySelector('#ae-cancel').onclick = close;
-
-  overlay.querySelectorAll('.kind-opt').forEach((b) => {
-    b.onclick = () => {
-      overlay.querySelectorAll('.kind-opt').forEach((x) => x.classList.remove('active'));
-      b.classList.add('active');
-      overlay.querySelector('.hours-wrap').style.display = hasHours(b.dataset.kind) ? '' : 'none';
-    };
-  });
-  overlay.querySelectorAll('.chip-btn').forEach((b) => {
-    b.onclick = () => {
-      const [a, c] = b.dataset.preset.split('|');
-      overlay.querySelector('#ae-start').value = a;
-      overlay.querySelector('#ae-end').value = c;
-    };
-  });
-
-  const rm = overlay.querySelector('#ae-remove');
-  if (rm) rm.onclick = async () => {
-    rm.disabled = true;
-    const { error } = await supabase.from('office_days').delete().eq('user_id', profile.id).eq('day', dayVal);
-    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; rm.disabled = false; return; }
-    close(); toast('Day removed'); onSaved(dayVal);
-  };
-
-  overlay.querySelector('#ae-save').onclick = async () => {
-    const day = overlay.querySelector('#ae-date').value;
-    if (!day) { msg.textContent = 'Please choose a date.'; msg.className = 'msg show error'; return; }
-    const k = overlay.querySelector('.kind-opt.active').dataset.kind;
-    let st = null, en = null;
-    if (hasHours(k)) {
-      st = overlay.querySelector('#ae-start').value;
-      en = overlay.querySelector('#ae-end').value;
-      if (!st || !en) { msg.textContent = 'Please choose both a start and end time.'; msg.className = 'msg show error'; return; }
-      if (st === en) { msg.textContent = "Start and end times can't be the same."; msg.className = 'msg show error'; return; }
-    }
-    let target = profile || me;
-    const sel = overlay.querySelector('#ae-user');
-    if (sel) target = (users || []).find((u) => u.id === sel.value) || target;
-    const payload = {
-      user_id: target.id, day,
-      display_name: target.full_name || target.email,
-      avatar_url: target.avatar_url || null,
-      kind: k, start_time: st, end_time: en,
-    };
-    const saveBtn = overlay.querySelector('#ae-save');
-    saveBtn.disabled = true;
-    const { error } = await supabase.from('office_days').upsert(payload, { onConflict: 'user_id,day' });
-    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-    close(); toast('Saved'); onSaved(day);
-  };
 }
 
 // ===========================================================================
@@ -2252,13 +1185,17 @@ function openEventModal(existing, dayISO) {
   const timed = !!(existing && existing.start_time);
   const st = existing && existing.start_time ? hhmm(existing.start_time) : '09:00';
   const en = existing && existing.end_time ? hhmm(existing.end_time) : '17:00';
+  const existingImg = existing && existing.image_path ? existing.image_path : null;
+  let imgFile = null;      // a newly chosen file (replaces the image on save)
+  let imgRemoved = false;  // admin cleared the existing image
+  let imgObjUrl = null;    // object URL for the local preview
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
     <div class="modal card pad">
       <h2 style="margin-bottom:4px;">${existing ? 'Edit event' : 'Add event'}</h2>
-      <p class="subtitle" style="margin-bottom:16px;">It shows on everyone's schedule.</p>
+      <p class="subtitle" style="margin-bottom:16px;">Everyone sees it on the Events page.</p>
       <label>Title</label>
       <input type="text" id="ev-title" maxlength="120" placeholder="Q3 Off-site, All-hands, Holiday party…" value="${esc(existing ? existing.title : '')}" />
       <label style="margin-top:14px;">Type</label>
@@ -2281,6 +1218,15 @@ function openEventModal(existing, dayISO) {
       <input type="text" id="ev-loc" maxlength="160" placeholder="HQ, Zoom, Lisbon…" value="${esc(existing ? existing.location : '')}" />
       <label style="margin-top:14px;">Notes <span class="muted-mini">(optional)</span></label>
       <textarea id="ev-notes" rows="2" maxlength="1000" placeholder="Agenda, who's invited, travel info…">${esc(existing ? existing.notes : '')}</textarea>
+      <label style="margin-top:14px;">Image <span class="muted-mini">(optional)</span></label>
+      <div class="ev-image">
+        <div class="ev-img-preview" id="ev-img-preview"></div>
+        <div class="ev-img-actions">
+          <button type="button" class="btn ghost sm" id="ev-img-choose"></button>
+          <button type="button" class="btn ghost sm" id="ev-img-remove" style="display:none;">Remove</button>
+          <input type="file" id="ev-img-file" accept="image/*" hidden />
+        </div>
+      </div>
       <div id="ev-msg" class="msg"></div>
       <div class="modal-foot">
         ${existing ? '<button class="btn danger" id="ev-remove" type="button" style="margin-right:auto;">Delete</button>' : ''}
@@ -2289,7 +1235,7 @@ function openEventModal(existing, dayISO) {
       </div>
     </div>`;
   document.body.appendChild(overlay);
-  const close = () => overlay.remove();
+  const close = () => { if (imgObjUrl) URL.revokeObjectURL(imgObjUrl); overlay.remove(); };
   const msg = overlay.querySelector('#ev-msg');
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   overlay.querySelector('#ev-cancel').onclick = close;
@@ -2312,10 +1258,41 @@ function openEventModal(existing, dayISO) {
   const endEl = overlay.querySelector('#ev-end');
   startEl.onchange = () => { if (endEl.value && endEl.value < startEl.value) endEl.value = startEl.value; };
 
+  // Image field: choose / replace / remove, with a live preview.
+  const imgPreview = overlay.querySelector('#ev-img-preview');
+  const imgFileEl = overlay.querySelector('#ev-img-file');
+  const imgChoose = overlay.querySelector('#ev-img-choose');
+  const imgRemoveBtn = overlay.querySelector('#ev-img-remove');
+  const paintImg = () => {
+    let src = '';
+    if (imgFile && imgObjUrl) src = imgObjUrl;
+    else if (existingImg && !imgRemoved) src = eventImageUrl(existingImg);
+    imgPreview.innerHTML = src ? `<img src="${esc(src)}" alt="" />` : `<span class="ev-img-none">${icon('image', 'ic')}No image</span>`;
+    imgRemoveBtn.style.display = src ? '' : 'none';
+    imgChoose.innerHTML = `${icon('image', 'ic sm')} ${src ? 'Replace' : 'Choose image'}`;
+  };
+  imgChoose.onclick = () => imgFileEl.click();
+  imgFileEl.onchange = () => {
+    const f = imgFileEl.files && imgFileEl.files[0];
+    if (!f) return;
+    if (f.size > 10 * 1024 * 1024) { msg.textContent = 'Image must be under 10 MB.'; msg.className = 'msg show error'; imgFileEl.value = ''; return; }
+    msg.className = 'msg';
+    imgFile = f; imgRemoved = false;
+    if (imgObjUrl) URL.revokeObjectURL(imgObjUrl);
+    imgObjUrl = URL.createObjectURL(f);
+    paintImg();
+  };
+  imgRemoveBtn.onclick = () => {
+    imgFile = null; imgRemoved = true;
+    if (imgObjUrl) { URL.revokeObjectURL(imgObjUrl); imgObjUrl = null; }
+    imgFileEl.value = '';
+    paintImg();
+  };
+  paintImg();
+
   const refresh = () => {
-    if (ui.view !== 'schedule') return;
-    sched.pendingSelect = sched.selectedDay; // keep the panel on the day we were viewing
-    loadSchedule();
+    if (ui.view === 'events') loadEvents();
+    else if (ui.view === 'dashboard') loadDashEvents();
   };
 
   const rm = overlay.querySelector('#ev-remove');
@@ -2323,6 +1300,7 @@ function openEventModal(existing, dayISO) {
     rm.disabled = true;
     const { error } = await supabase.from('events').delete().eq('id', existing.id);
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; rm.disabled = false; return; }
+    if (existing.image_path) supabase.storage.from('event-images').remove([existing.image_path]).catch(() => {});
     close(); toast('Event deleted'); refresh();
   };
 
@@ -2339,19 +1317,46 @@ function openEventModal(existing, dayISO) {
       etime = overlay.querySelector('#ev-etime').value;
       if (!stime || !etime) { msg.textContent = 'Set a start and end time, or tick All day.'; msg.className = 'msg show error'; return; }
     }
+    const saveBtn = overlay.querySelector('#ev-save');
+    saveBtn.disabled = true;
+
+    // Resolve the image: upload a new one, keep the old, or clear it.
+    let image_path = imgRemoved ? null : existingImg;
+    if (imgFile) {
+      const safe = ((imgFile.name || 'image').replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+/, '').slice(-60)) || 'image';
+      const rnd = (globalThis.crypto && globalThis.crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const path = `${rnd}-${safe}`;
+      const { error: upErr } = await supabase.storage.from('event-images')
+        .upload(path, imgFile, { contentType: imgFile.type || 'image/*', upsert: false });
+      if (upErr) { msg.textContent = upErr.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
+      image_path = path;
+    }
+
     const payload = {
       title, kind, starts_on: starts, ends_on: ends,
       start_time: stime, end_time: etime,
       location: overlay.querySelector('#ev-loc').value.trim(),
       notes: overlay.querySelector('#ev-notes').value.trim(),
+      image_path,
       created_by: me.id, updated_at: new Date().toISOString(),
     };
-    const saveBtn = overlay.querySelector('#ev-save');
-    saveBtn.disabled = true;
-    let error;
-    if (existing) ({ error } = await supabase.from('events').update(payload).eq('id', existing.id));
-    else ({ error } = await supabase.from('events').insert(payload));
+    // Write, tolerating a DB that predates the image_path column (retry without it).
+    const write = async (p) => {
+      let res = existing
+        ? await supabase.from('events').update(p).eq('id', existing.id)
+        : await supabase.from('events').insert(p);
+      if (res.error && isMissingSchema(res.error) && 'image_path' in p) {
+        const { image_path: _drop, ...safe } = p;
+        res = existing
+          ? await supabase.from('events').update(safe).eq('id', existing.id)
+          : await supabase.from('events').insert(safe);
+      }
+      return res;
+    };
+    const { error } = await write(payload);
     if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
+    // Clean up the old image if it was replaced or removed.
+    if (existingImg && existingImg !== image_path) supabase.storage.from('event-images').remove([existingImg]).catch(() => {});
     close(); toast(existing ? 'Event saved' : 'Event added'); refresh();
   };
 }
