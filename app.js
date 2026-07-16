@@ -193,6 +193,7 @@ function icon(name, cls = 'ic') {
     clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
     pin: '<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
     image: '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
+    target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
   };
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -570,6 +571,7 @@ function renderShell() {
           <button class="nav-item" data-view="dashboard" type="button">${icon('dash')}<span class="txt">Dashboard</span></button>
           <button class="nav-item" data-view="events" type="button">${icon('cal')}<span class="txt">Events</span></button>
           <button class="nav-item" data-view="board" type="button">${icon('board')}<span class="txt">Board</span></button>
+          <button class="nav-item" data-view="outreach" type="button">${icon('target')}<span class="txt">Outreach</span></button>
           ${isAdmin ? `<button class="nav-item" data-view="team" type="button">${icon('team')}<span class="txt">Team</span><span class="nav-badge" id="nav-pending" style="display:none"></span></button>` : ''}
           ${isAdmin ? `<button class="nav-item" data-view="reviews" type="button">${icon('star')}<span class="txt">Reviews</span></button>` : ''}
           <button class="nav-item" id="nav-settings" type="button">${icon('gear')}<span class="txt">Settings</span></button>
@@ -626,6 +628,7 @@ function setView(v) {
   if (v === 'dashboard') viewDashboard(view);
   else if (v === 'events') viewEvents(view);
   else if (v === 'board') viewBoard(view);
+  else if (v === 'outreach') viewOutreach(view);
   else if (v === 'team') viewTeam(view);
   else if (v === 'reviews') viewReviews(view);
   else viewDashboard(view);
@@ -962,6 +965,163 @@ async function loadDashEvents() {
     return;
   }
   box.innerHTML = upcoming.map(eventRowHTML).join('');
+}
+
+// ===========================================================================
+// Outreach tracker — a shared, gamified counter. Tap once per person you reach
+// out to; everyone sees the leaderboard by day / week / month / all time.
+// ===========================================================================
+const outreach = { window: 'day', rows: [] };
+const OUTREACH_WINDOWS = [['day', 'Today'], ['week', 'This week'], ['month', 'This month'], ['all', 'All time']];
+const outreachWinLabel = (w) => (OUTREACH_WINDOWS.find((x) => x[0] === w) || [null, ''])[1];
+
+function outreachInWindow(r, win) {
+  if (win === 'all') return true;
+  if (win === 'day') return r.day === TODAY;
+  if (win === 'week') return r.day >= weekStartISO() && r.day <= TODAY;
+  if (win === 'month') return r.day.slice(0, 7) === TODAY.slice(0, 7);
+  return true;
+}
+
+// Per-user totals for a window, highest first (only people with a count show).
+function outreachBoard(win) {
+  const by = new Map();
+  for (const r of outreach.rows) {
+    if (!outreachInWindow(r, win)) continue;
+    const cur = by.get(r.user_id) || { user_id: r.user_id, name: r.display_name || 'Someone', avatar: r.avatar_url, count: 0 };
+    cur.count += r.count || 0;
+    if (r.display_name) cur.name = r.display_name;
+    if (r.avatar_url) cur.avatar = r.avatar_url;
+    by.set(r.user_id, cur);
+  }
+  return [...by.values()].filter((u) => u.count > 0).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+function myOutreach(win) {
+  let n = 0;
+  for (const r of outreach.rows) if (r.user_id === me.id && outreachInWindow(r, win)) n += r.count || 0;
+  return n;
+}
+
+function viewOutreach(view) {
+  view.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1>Outreach</h1>
+        <p class="subtitle" style="margin:2px 0 0;">Tap once for every person you reach out to. See how the whole team's doing 💥</p>
+      </div>
+      <div class="th-actions">
+        <div class="seg" id="or-window">
+          ${OUTREACH_WINDOWS.map(([v, l]) => `<button data-w="${v}" class="${outreach.window === v ? 'active' : ''}" type="button">${l}</button>`).join('')}
+        </div>
+      </div>
+    </div>
+    <div id="or-wrap"><div class="spinner">Loading…</div></div>`;
+  view.querySelectorAll('#or-window button').forEach((b) => {
+    b.onclick = () => {
+      outreach.window = b.dataset.w;
+      view.querySelectorAll('#or-window button').forEach((x) => x.classList.toggle('active', x === b));
+      renderOutreach();
+    };
+  });
+  loadOutreach();
+}
+
+async function loadOutreach() {
+  const { data, error } = await supabase
+    .from('outreach_counts')
+    .select('user_id, day, count, display_name, avatar_url');
+  outreach.rows = error ? [] : (data || []);
+  renderOutreach();
+}
+
+function renderOutreach() {
+  const wrap = document.getElementById('or-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = `
+    <div class="or-top">
+      <button class="or-tap" id="or-tap" type="button" aria-label="Add one — I just reached out to someone">
+        <span class="or-plus">+1</span>
+        <span class="or-emoji" id="or-emoji"></span>
+        <span class="or-count" id="or-count">0</span>
+        <span class="or-lbl">reached out<br><span class="muted-mini" id="or-winlbl"></span></span>
+      </button>
+      <div class="or-tap-foot">
+        <button class="btn ghost sm" id="or-undo" type="button">− Undo</button>
+        <span class="muted-mini" id="or-team"></span>
+      </div>
+    </div>
+    <div class="card pad or-board">
+      <div class="card-head"><h3>Leaderboard <span class="muted-mini" id="or-boardwin"></span></h3></div>
+      <div class="or-list" id="or-list"></div>
+    </div>`;
+  const tap = wrap.querySelector('#or-tap');
+  tap.onclick = () => bumpOutreach(1, tap);
+  wrap.querySelector('#or-undo').onclick = () => bumpOutreach(-1, tap);
+  paintOutreach();
+}
+
+// Update numbers + leaderboard in place (no rebuild of the tap button, so rapid
+// tapping stays smooth and keeps animating).
+function paintOutreach() {
+  const win = outreach.window;
+  const label = outreachWinLabel(win);
+  const mine = myOutreach(win);
+  const board = outreachBoard(win);
+  const teamTotal = board.reduce((s, u) => s + u.count, 0);
+  const top = board.length ? board[0].count : 0;
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  set('or-count', mine);
+  set('or-winlbl', label.toLowerCase());
+  set('or-boardwin', `· ${label}`);
+  const emo = document.getElementById('or-emoji');
+  if (emo) emo.textContent = mine >= 50 ? '🚀' : mine >= 20 ? '🔥' : mine >= 1 ? '💪' : '👋';
+  const team = document.getElementById('or-team');
+  if (team) team.innerHTML = `Team reached out <strong>${teamTotal}</strong> time${teamTotal === 1 ? '' : 's'} ${esc(label.toLowerCase())}`;
+  const undo = document.getElementById('or-undo');
+  if (undo) undo.disabled = myOutreach('day') <= 0;
+  const list = document.getElementById('or-list');
+  if (list) list.innerHTML = board.length
+    ? board.map((u, i) => outreachRowHTML(u, i, top)).join('')
+    : '<div class="empty" style="padding:12px 2px">No outreach yet — tap the button to get the team started! 👆</div>';
+}
+
+function outreachRowHTML(u, i, top) {
+  const meFlag = u.user_id === me.id;
+  const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `<span class="or-rank">${i + 1}</span>`;
+  const pct = top ? Math.round((u.count / top) * 100) : 0;
+  return `
+    <div class="or-row${meFlag ? ' me' : ''}">
+      <span class="or-medal">${medal}</span>
+      ${avatarHTML(u.name, meFlag, 'sm', u.avatar)}
+      <div class="or-who">
+        <span class="or-name">${esc(shortName(u.name))}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</span>
+        <div class="or-bar"><i style="width:${pct}%"></i></div>
+      </div>
+      <span class="or-num">${u.count}</span>
+    </div>`;
+}
+
+// Nudge my own counter for TODAY by ±1. Optimistic + rapid-tap friendly; each
+// tap fires its own atomic RPC, so many taps in a row just add up.
+async function bumpOutreach(delta, tapEl) {
+  delta = delta >= 0 ? 1 : -1;
+  let row = outreach.rows.find((r) => r.user_id === me.id && r.day === TODAY);
+  if (delta < 0 && (!row || (row.count || 0) <= 0)) return; // nothing to undo
+  if (!row) {
+    row = { user_id: me.id, day: TODAY, count: 0, display_name: me.full_name || me.email || '', avatar_url: me.avatar_url || null };
+    outreach.rows.push(row);
+  }
+  row.count = Math.max(0, (row.count || 0) + delta);
+  if (tapEl && delta > 0) { tapEl.classList.remove('pop'); void tapEl.offsetWidth; tapEl.classList.add('pop'); }
+  paintOutreach();
+  const { error } = await supabase.rpc('adjust_outreach', { p_day: TODAY, p_delta: delta });
+  if (error) {
+    const r2 = outreach.rows.find((r) => r.user_id === me.id && r.day === TODAY);
+    if (r2) r2.count = Math.max(0, (r2.count || 0) - delta);
+    paintOutreach();
+    toast(error.message);
+  }
 }
 
 // ===========================================================================

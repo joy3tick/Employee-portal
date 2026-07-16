@@ -1083,6 +1083,40 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .de-title { font-weight: 600; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .de-sub { font-size: 0.76rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ===== Outreach tracker ===== */
+.or-top { display: flex; flex-direction: column; align-items: center; gap: 14px; margin: 10px 0 28px; }
+.or-tap {
+  position: relative; width: 210px; height: 210px; border-radius: 50%; border: 0; cursor: pointer;
+  background: var(--grad); color: #fff; box-shadow: 0 16px 38px rgba(225, 29, 43, 0.34);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  font-family: inherit; -webkit-tap-highlight-color: transparent; user-select: none;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.or-tap:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 20px 44px rgba(225, 29, 43, 0.4); }
+.or-tap:active { transform: scale(0.96); }
+.or-tap:focus-visible { outline: none; box-shadow: 0 16px 38px rgba(225, 29, 43, 0.34), 0 0 0 4px var(--accent-soft); }
+.or-plus { position: absolute; top: 22px; right: 28px; font-size: 0.95rem; font-weight: 800; opacity: 0.85; }
+.or-emoji { font-size: 1.7rem; line-height: 1; margin-bottom: 2px; }
+.or-count { font-size: 3.7rem; font-weight: 800; line-height: 0.95; letter-spacing: -0.02em; }
+.or-lbl { font-size: 0.82rem; font-weight: 600; text-align: center; line-height: 1.25; margin-top: 2px; }
+.or-lbl .muted-mini { color: rgba(255, 255, 255, 0.82); }
+@keyframes orpop { 0% { transform: scale(1); } 35% { transform: scale(1.09); } 100% { transform: scale(1); } }
+.or-tap.pop { animation: orpop 0.28s ease; }
+.or-tap-foot { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; justify-content: center; }
+
+.or-board .card-head { margin-bottom: 6px; }
+.or-list { display: flex; flex-direction: column; }
+.or-row { display: flex; align-items: center; gap: 12px; padding: 9px 6px; border-top: 1px solid var(--border); }
+.or-row:first-child { border-top: 0; }
+.or-row.me { background: var(--accent-soft); border-radius: 10px; border-top-color: transparent; }
+.or-medal { flex: 0 0 auto; width: 26px; text-align: center; font-size: 1.1rem; }
+.or-rank { font-size: 0.82rem; font-weight: 800; color: var(--muted); }
+.or-who { flex: 1; min-width: 0; }
+.or-name { font-weight: 600; font-size: 0.9rem; }
+.or-bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin-top: 5px; }
+.or-bar i { display: block; height: 100%; background: var(--grad); border-radius: 3px; transition: width 0.3s ease; }
+.or-num { flex: 0 0 auto; font-size: 1.2rem; font-weight: 800; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+
 /* event modal image field */
 .ev-image { display: flex; gap: 14px; align-items: center; margin-top: 4px; }
 .ev-img-preview { flex: 0 0 auto; width: 96px; height: 96px; border-radius: 12px; overflow: hidden; background: var(--surface-2); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; }

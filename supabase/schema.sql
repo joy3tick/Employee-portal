@@ -615,6 +615,64 @@ create policy event_images_delete on storage.objects for delete using (
 );
 
 -- ---------------------------------------------------------------------------
+-- Outreach tracker — a shared, gamified counter (everyone).
+-- ---------------------------------------------------------------------------
+-- One row per user per day holds how many people they reached out to that day.
+-- Everyone approved can SEE the whole leaderboard; nobody writes the table
+-- directly — every change goes through adjust_outreach() below, so a user can
+-- only ever nudge their OWN counter, by ±1, for a given day.
+create table if not exists public.outreach_counts (
+  user_id      uuid not null references public.profiles (id) on delete cascade,
+  day          date not null,
+  count        int  not null default 0,
+  display_name text not null default '',   -- denormalized so the board shows names
+  avatar_url   text,                        -- without reading each other's profiles
+  updated_at   timestamptz not null default now(),
+  primary key (user_id, day)
+);
+create index if not exists outreach_counts_day_idx on public.outreach_counts (day);
+
+alter table public.outreach_counts enable row level security;
+
+drop policy if exists outreach_select on public.outreach_counts;
+create policy outreach_select on public.outreach_counts for select
+  using (public.is_approved());
+-- (No insert/update/delete policies on purpose — writes only via the RPC.)
+
+-- Nudge my own counter for a day by ±1 and return the new total. security
+-- definer so it can upsert past RLS; it always uses auth.uid(), so you can only
+-- ever change your own row.
+create or replace function public.adjust_outreach(p_day date, p_delta int)
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_new    int;
+  v_name   text;
+  v_avatar text;
+begin
+  if not public.is_approved() then
+    raise exception 'Not allowed';
+  end if;
+  p_delta := case when coalesce(p_delta, 1) >= 0 then 1 else -1 end;  -- clamp to a single step
+  if p_day is null then p_day := current_date; end if;
+  select full_name, avatar_url into v_name, v_avatar from public.profiles where id = auth.uid();
+  insert into public.outreach_counts (user_id, day, count, display_name, avatar_url)
+  values (auth.uid(), p_day, greatest(0, p_delta), coalesce(v_name, ''), v_avatar)
+  on conflict (user_id, day) do update
+    set count        = greatest(0, outreach_counts.count + p_delta),
+        display_name = coalesce(v_name, outreach_counts.display_name),
+        avatar_url   = v_avatar,
+        updated_at   = now()
+  returning count into v_new;
+  return v_new;
+end;
+$$;
+grant execute on function public.adjust_outreach(date, int) to authenticated, anon;
+
+-- ---------------------------------------------------------------------------
 -- Reload the PostgREST schema cache so the new tables/columns are queryable
 -- immediately (otherwise there's a brief window after a migration where the API
 -- can't see them yet). Safe to run anytime.

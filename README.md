@@ -14,6 +14,7 @@ A simple internal portal for Redline employees:
   - **Attachments** — anyone (employees included) can attach files to a card, **up to 10 per card** (images preview as thumbnails); the uploader or an admin can remove them, and a 📎 count shows on the card face.
   
   The whole board is visible to everyone, and your dashboard shows a per-stage count of your own cards.
+- **Outreach tracker** — a shared, gamified counter. Tap the big button every time you reach out to someone and your ticker ticks up (+1); a **leaderboard** shows everyone's totals with medals for the top three. Flip between **Today / This week / This month / All time**, and there's a one-tap **Undo** for misclicks. Everyone sees everyone — friendly competition, more fun.
 
 It's a **static web app** (plain HTML/CSS/JS, no build step) that talks directly to **Supabase** (Auth + Postgres). There's no server to run — it's hosted on **Vercel** and all security is enforced by Postgres Row Level Security.
 
@@ -36,7 +37,7 @@ Open the SQL editor, paste the contents of [`supabase/schema.sql`](supabase/sche
 
 This creates the tables, the auto-profile trigger (which makes **alexrogul@gmail.com** an admin automatically), the `avatars` storage bucket, and the security policies.
 
-> **Updating a project that's already LIVE?** Don't re-run the whole `schema.sql` on a site people are using — it rebuilds the `profiles`/`office_days` login & schedule policies and briefly locks those tables, which can hang the live app on "Loading…" while it runs. Instead, run the **small, isolated migration** for the feature you're adding, which only adds the new objects and never touches login/schedule. For the board's **labels, card ordering, checklists, comments, and attachments**, that's [`supabase/board_update.sql`](supabase/board_update.sql); for **event cover images**, it's [`supabase/events_update.sql`](supabase/events_update.sql) — paste and **Run** the one(s) you need (both are idempotent, so they're safe even if you ran an earlier version). (Re-running the full `schema.sql` is fine on a fresh/idle project.)
+> **Updating a project that's already LIVE?** Don't re-run the whole `schema.sql` on a site people are using — it rebuilds the `profiles`/`office_days` login & schedule policies and briefly locks those tables, which can hang the live app on "Loading…" while it runs. Instead, run the **small, isolated migration** for the feature you're adding, which only adds the new objects and never touches login/schedule. For the board's **labels, card ordering, checklists, comments, and attachments**, that's [`supabase/board_update.sql`](supabase/board_update.sql); for **event cover images**, it's [`supabase/events_update.sql`](supabase/events_update.sql); for the **outreach tracker**, it's [`supabase/outreach.sql`](supabase/outreach.sql) — paste and **Run** the one(s) you need (all are idempotent, so they're safe even if you ran an earlier version). (Re-running the full `schema.sql` is fine on a fresh/idle project.)
 
 ### 2. Turn off email confirmation (recommended)
 So signup is instant (admin approval is the real gate anyway):
