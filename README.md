@@ -4,9 +4,7 @@ A simple internal portal for Redline employees:
 
 - **Self-service signup** — employees create an account in seconds.
 - **Admin approval** — new accounts sit in *pending* until an admin approves or denies them.
-- **Events** — a shared **Events** page everyone can see: what's **coming up**, with past events below. **Admins add events** — company events, off-sites, holidays, and socials — each with a **date (or multi-day range)**, a **time** (or all-day), a **location**, notes, and an optional **cover image**. Employees just view them; the next few upcoming events also surface on everyone's dashboard.
 - **Profile pictures** — everyone can upload their own photo; admins can set one for any employee.
-- **Weekly performance reviews** — admins rate each employee 1–10 with a note, once per week (any time during the week). A **Reviews** page shows every employee's status for a chosen week, and each employee's profile keeps their full review history. **Employees see their own reviews** (rating + note) on their dashboard as soon as you post them — but can't see anyone else's or edit their own.
 - **Task board (Trello-style)** — a shared Kanban with four columns: **Inbound → In progress → Awaiting review → Completed**. **Only admins create, assign, and edit cards** (title, details, assignee, optional **due date** — overdue cards flag red — and colored **labels** like *Urgent* / *Blocked* / *Design*); employees can't add or change them. Employees drag the work assigned to them through the first three columns (or use the ◀ ▶ buttons on touch), and can **drag to reorder** cards within a column. They can open any card read-only — including **expanding it inline** (chevron) to read the full task. Crucially, **only an admin can move a card into _Completed_** — employees push their work to *Awaiting review* and see a "⏳ Admin sign-off" tag until an admin hits **✓ Complete**. Once completed, the **assignee or an admin can delete** the card — or just leave it.
   - **Filters** — narrow the board by **assignee**, **label**, or **due date** (overdue / due today / this week / none), on top of the Everyone / Just me toggle.
   - **Checklists** — admins break a card into sub-tasks; the **assignee ticks them off** (a progress bar + *3/5* badge show on the card face), but only admins add, rename, or remove items.
@@ -14,7 +12,7 @@ A simple internal portal for Redline employees:
   - **Attachments** — anyone (employees included) can attach files to a card, **up to 10 per card** (images preview as thumbnails); the uploader or an admin can remove them, and a 📎 count shows on the card face.
   
   The whole board is visible to everyone, and your dashboard shows a per-stage count of your own cards.
-- **Outreach tracker** — a shared, gamified counter. Tap the big button every time you reach out to someone and your ticker ticks up (+1); a **leaderboard** shows everyone's totals with medals for the top three. Flip between **Today / This week / This month / All time**, and there's a one-tap **Undo** for misclicks. Everyone sees everyone — friendly competition, more fun.
+- **Outreach tracker** — a shared, gamified counter. Tap the big button every time you reach out to someone and your ticker ticks up (+1); a **leaderboard** shows everyone's totals with medals for the top three, and a **team scoreboard** totals the whole team for each window. Flip between **Today / This week / This month / All time**, with a one-tap **Undo** for misclicks. It updates **live** — when a teammate taps, your board moves in real time. Everyone sees everyone — friendly competition, more fun.
 
 It's a **static web app** (plain HTML/CSS/JS, no build step) that talks directly to **Supabase** (Auth + Postgres). There's no server to run — it's hosted on **Vercel** and all security is enforced by Postgres Row Level Security.
 
@@ -37,7 +35,9 @@ Open the SQL editor, paste the contents of [`supabase/schema.sql`](supabase/sche
 
 This creates the tables, the auto-profile trigger (which makes **alexrogul@gmail.com** an admin automatically), the `avatars` storage bucket, and the security policies.
 
-> **Updating a project that's already LIVE?** Don't re-run the whole `schema.sql` on a site people are using — it rebuilds the `profiles`/`office_days` login & schedule policies and briefly locks those tables, which can hang the live app on "Loading…" while it runs. Instead, run the **small, isolated migration** for the feature you're adding, which only adds the new objects and never touches login/schedule. For the board's **labels, card ordering, checklists, comments, and attachments**, that's [`supabase/board_update.sql`](supabase/board_update.sql); for **event cover images**, it's [`supabase/events_update.sql`](supabase/events_update.sql); for the **outreach tracker**, it's [`supabase/outreach.sql`](supabase/outreach.sql) — paste and **Run** the one(s) you need (all are idempotent, so they're safe even if you ran an earlier version). (Re-running the full `schema.sql` is fine on a fresh/idle project.)
+> **Updating a project that's already LIVE?** Don't re-run the whole `schema.sql` on a site people are using — it rebuilds the `profiles`/`office_days` login & schedule policies and briefly locks those tables, which can hang the live app on "Loading…" while it runs. Instead, run the **small, isolated migration** for the feature you're adding, which only adds the new objects and never touches login/schedule. For the board's **labels, card ordering, checklists, comments, and attachments**, that's [`supabase/board_update.sql`](supabase/board_update.sql); for the **outreach tracker**, it's [`supabase/outreach.sql`](supabase/outreach.sql) — paste and **Run** the one(s) you need (all are idempotent, so they're safe even if you ran an earlier version). (Re-running the full `schema.sql` is fine on a fresh/idle project.)
+>
+> The Events and Weekly-Reviews features were removed. Their tables still exist (unused) unless you purge them with the optional, **destructive** [`supabase/drop_events_reviews.sql`](supabase/drop_events_reviews.sql).
 
 ### 2. Turn off email confirmation (recommended)
 So signup is instant (admin approval is the real gate anyway):
@@ -52,9 +52,9 @@ That's it. **Open the live URL and create your account with `alexrogul@gmail.com
 
 ## Using it
 
-**You (admin):** sign up / sign in with `alexrogul@gmail.com` → **Admin dashboard**. Approve or deny pending requests, revoke access, or promote someone to admin. Head to **Events** to post company events (with times, locations, and images), or **Board** to assign work.
+**You (admin):** sign up / sign in with `alexrogul@gmail.com` → **Admin dashboard**. Approve or deny pending requests, revoke access, or promote someone to admin. Head to **Board** to assign work, or **Outreach** to track the team's reach-outs.
 
-**Employees:** create an account → see *"awaiting approval"* → once you approve them, they sign in and land on their **dashboard**. From there they can browse the **Events** page to see what's coming up and work their **Board** tasks.
+**Employees:** create an account → see *"awaiting approval"* → once you approve them, they sign in and land on their **dashboard**. From there they work their **Board** tasks and log **Outreach**.
 
 ---
 
@@ -75,7 +75,7 @@ update public.profiles set role = 'admin', status = 'approved' where email = 'so
 ├── index.html          # app shell
 ├── config.js           # public Supabase URL + anon key
 ├── styles.css          # Redline theme
-├── app.js              # the whole app: auth, approval, events, reviews, tasks, admin
+├── app.js              # the whole app: auth, approval, board, outreach, admin
 ├── assets/logo.png     # Redline logo — favicon + in-app branding
 ├── vercel.json         # tells Vercel to serve the folder as a static site
 ├── supabase/schema.sql # run this once in the Supabase SQL editor

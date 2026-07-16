@@ -62,6 +62,17 @@ end;
 $$;
 grant execute on function public.adjust_outreach(date, int) to authenticated, anon;
 
+-- Enable Realtime so the leaderboard + team totals update live for everyone.
+-- (Guarded so re-running never errors on "already a member".)
+do $$ begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'outreach_counts'
+  ) then
+    alter publication supabase_realtime add table public.outreach_counts;
+  end if;
+end $$;
+
 commit;
 
 -- Pick up the new table/function in the API immediately.

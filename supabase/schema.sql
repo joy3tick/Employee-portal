@@ -672,6 +672,16 @@ end;
 $$;
 grant execute on function public.adjust_outreach(date, int) to authenticated, anon;
 
+-- Enable Realtime so the outreach leaderboard + team totals update live.
+do $$ begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'outreach_counts'
+  ) then
+    alter publication supabase_realtime add table public.outreach_counts;
+  end if;
+end $$;
+
 -- ---------------------------------------------------------------------------
 -- Reload the PostgREST schema cache so the new tables/columns are queryable
 -- immediately (otherwise there's a brief window after a migration where the API

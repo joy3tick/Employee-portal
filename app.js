@@ -20,15 +20,6 @@ const TODAY = toISO(new Date());
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']; // Monday-first
 
-// Company events on the shared calendar (admin-managed). Each kind has a label + emoji.
-const EVENT_KIND = {
-  event:   { label: 'Event',    emoji: '📅' },
-  offsite: { label: 'Off-site', emoji: '✈️' },
-  holiday: { label: 'Holiday',  emoji: '🎉' },
-  social:  { label: 'Social',   emoji: '🍕' },
-};
-const eventKindOf = (e) => (EVENT_KIND[e.kind] ? e.kind : 'event');
-
 const esc = (s) =>
   String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -102,41 +93,6 @@ function weekStartISO(d = new Date()) {
   x.setDate(x.getDate() - off);
   return toISO(x);
 }
-
-// Inclusive count of calendar weeks spanned by two days.
-function diffWeeks(aISO, bISO) {
-  const a = new Date(`${weekStartISO(aISO)}T00:00:00`);
-  const b = new Date(`${weekStartISO(bISO)}T00:00:00`);
-  return Math.max(1, Math.round((b - a) / (7 * 86400000)) + 1);
-}
-
-// "Jun 8 – 14" (or "Jun 29 – Jul 5" across a month boundary) for a week's Monday.
-function fmtWeekRange(ws) {
-  const a = new Date(`${ws}T00:00:00`);
-  const b = new Date(a); b.setDate(b.getDate() + 6);
-  const aS = a.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  const sameMonth = a.getMonth() === b.getMonth();
-  const bS = b.toLocaleDateString(undefined, sameMonth ? { day: 'numeric' } : { month: 'short', day: 'numeric' });
-  return `${aS} – ${bS}`;
-}
-function weekTitle(ws) {
-  return `Week of ${fmtWeekRange(ws)}, ${new Date(`${ws}T00:00:00`).getFullYear()}`;
-}
-function relWeekLabel(ws) {
-  const cur = weekStartISO();
-  if (ws === cur) return 'This week';
-  if (ws === addDaysISO(cur, -7)) return 'Last week';
-  return fmtWeekRange(ws);
-}
-// [primary, secondary] labels for a week, e.g. ["This week", "Jun 8 – 14, 2026"]
-// or ["May 18 – 24", "2026"] when there's no relative label to add.
-function weekLabelParts(ws) {
-  const rel = relWeekLabel(ws);
-  const range = fmtWeekRange(ws);
-  const yr = new Date(`${ws}T00:00:00`).getFullYear();
-  return rel === range ? [range, `${yr}`] : [rel, `${range}, ${yr}`];
-}
-function ratingTier(n) { return n <= 4 ? 'low' : n <= 7 ? 'mid' : 'high'; }
 
 // ---- Time formatting (values arrive as "HH:MM" or "HH:MM:SS") ----
 const hhmm = (t) => String(t || '').slice(0, 5);
@@ -237,7 +193,6 @@ let me = null;
 let lastUserId = undefined;
 let clockTimer = null;
 const ui = { view: 'dashboard', search: '', teamUser: null };
-const reviews = { weekStart: weekStartISO() };
 // filter   = 'all' | 'mine' (the Everyone/Just me segment; decided per-role on first open)
 // assignee = 'all' | a user id   |  label = 'all' | a label key  |  due = see dueMatches()
 // checklist/comments/attachments = { [card_id]: [...] }, loaded alongside the cards.
@@ -569,11 +524,9 @@ function renderShell() {
         </div>
         <nav class="s-nav">
           <button class="nav-item" data-view="dashboard" type="button">${icon('dash')}<span class="txt">Dashboard</span></button>
-          <button class="nav-item" data-view="events" type="button">${icon('cal')}<span class="txt">Events</span></button>
           <button class="nav-item" data-view="board" type="button">${icon('board')}<span class="txt">Board</span></button>
           <button class="nav-item" data-view="outreach" type="button">${icon('target')}<span class="txt">Outreach</span></button>
           ${isAdmin ? `<button class="nav-item" data-view="team" type="button">${icon('team')}<span class="txt">Team</span><span class="nav-badge" id="nav-pending" style="display:none"></span></button>` : ''}
-          ${isAdmin ? `<button class="nav-item" data-view="reviews" type="button">${icon('star')}<span class="txt">Reviews</span></button>` : ''}
           <button class="nav-item" id="nav-settings" type="button">${icon('gear')}<span class="txt">Settings</span></button>
         </nav>
         ${STRIPES}
@@ -582,7 +535,6 @@ function renderShell() {
         <div class="topbar">
           <div class="now" id="now-text" style="margin-right:auto"></div>
           <button class="icon-btn" id="bell" type="button" title="Notifications">${icon('bell')}<span class="bell-badge" id="bell-badge" style="display:none"></span></button>
-          ${isAdmin ? `<button class="add-btn" id="quick-add" type="button" title="Add event">${icon('plus')}</button>` : ''}
         </div>
         <div id="view"></div>
       </div>
@@ -592,8 +544,6 @@ function renderShell() {
     b.onclick = () => { ui.teamUser = null; setView(b.dataset.view); };
   });
   document.getElementById('nav-settings').onclick = openProfileModal;
-  const qa = document.getElementById('quick-add');
-  if (qa) qa.onclick = () => openEventModal(null);
   document.getElementById('bell').onclick = () => {
     if (isAdmin) { ui.teamUser = null; setView('team'); }
     else toast("You're all caught up 🎉");
@@ -618,7 +568,8 @@ function startClock() {
 }
 
 function setView(v) {
-  if ((v === 'team' || v === 'reviews') && me.role !== 'admin') v = 'dashboard';
+  if (v === 'team' && me.role !== 'admin') v = 'dashboard';
+  if (ui.view === 'outreach' && v !== 'outreach') unsubscribeOutreach(); // leave the live feed
   ui.view = v;
   document.querySelectorAll('.nav-item[data-view]').forEach((b) => {
     b.classList.toggle('active', b.dataset.view === v);
@@ -626,11 +577,9 @@ function setView(v) {
   const view = document.getElementById('view');
   if (!view) return;
   if (v === 'dashboard') viewDashboard(view);
-  else if (v === 'events') viewEvents(view);
   else if (v === 'board') viewBoard(view);
   else if (v === 'outreach') viewOutreach(view);
   else if (v === 'team') viewTeam(view);
-  else if (v === 'reviews') viewReviews(view);
   else viewDashboard(view);
 }
 
@@ -659,35 +608,24 @@ function viewDashboard(view) {
         <div class="card hero">
           <div class="hero-text">
             <h1>Welcome, <span class="hl">${esc(firstName(me.full_name || me.email))}</span></h1>
-            <p>See what's coming up, work your board, and keep your week on track — all from one place.</p>
-            <button class="btn primary" id="hero-cta" type="button">View events</button>
+            <p>Work your board, track your outreach, and keep your day on track — all from one place.</p>
+            <button class="btn primary" id="hero-cta" type="button">Open the board</button>
           </div>
           ${HERO_ART}
         </div>
-        <div class="dash-grid">
-          <div class="dash-col">
-            <div class="card pad profile-card">
-              <button class="edit-fab" id="prof-edit" type="button" title="Edit your profile">${icon('edit', 'ic sm')}</button>
-              <div class="prof-head">
-                <button class="av-btn" id="prof-avatar" type="button" title="Change photo">${avatarHTML(me.full_name || me.email, true, 'lg', me.avatar_url)}</button>
-                <div>
-                  <div class="prof-name">${esc(me.full_name || '(no name)')}</div>
-                  <span class="badge ${esc(me.role)}">${esc(me.role)}</span>
-                </div>
-              </div>
-              <div class="prof-rows">
-                <div><span>Email</span><strong>${esc(me.email)}</strong></div>
-                <div><span>Joined</span><strong>${fmtDate((me.created_at || '').slice(0, 10)) || '—'}</strong></div>
-                <div><span>Status</span><strong style="text-transform:capitalize">${esc(me.status)}</strong></div>
-              </div>
+        <div class="card pad profile-card">
+          <button class="edit-fab" id="prof-edit" type="button" title="Edit your profile">${icon('edit', 'ic sm')}</button>
+          <div class="prof-head">
+            <button class="av-btn" id="prof-avatar" type="button" title="Change photo">${avatarHTML(me.full_name || me.email, true, 'lg', me.avatar_url)}</button>
+            <div>
+              <div class="prof-name">${esc(me.full_name || '(no name)')}</div>
+              <span class="badge ${esc(me.role)}">${esc(me.role)}</span>
             </div>
           </div>
-          <div class="card pad events-card">
-            <div class="card-head">
-              <h3>Upcoming events</h3>
-              <button class="link-btn" id="see-events" type="button">See all</button>
-            </div>
-            <div id="de-body"><div class="spinner">Loading…</div></div>
+          <div class="prof-rows">
+            <div><span>Email</span><strong>${esc(me.email)}</strong></div>
+            <div><span>Joined</span><strong>${fmtDate((me.created_at || '').slice(0, 10)) || '—'}</strong></div>
+            <div><span>Status</span><strong style="text-transform:capitalize">${esc(me.status)}</strong></div>
           </div>
         </div>
       </div>
@@ -695,10 +633,6 @@ function viewDashboard(view) {
         <div class="card pad board-card" id="board-card">
           <div class="card-head"><h3>Your board</h3><button class="link-btn" id="tc-all" type="button">Open board</button></div>
           <div id="tc-body"><div class="spinner">Loading…</div></div>
-        </div>
-        <div class="card pad review-card" id="review-card">
-          <div class="card-head"><h3>Your latest review</h3></div>
-          <div id="rc-body"><div class="spinner">Loading…</div></div>
         </div>
         ${isAdmin ? `
         <div class="card pad pending-card">
@@ -708,8 +642,7 @@ function viewDashboard(view) {
       </aside>
     </div>`;
 
-  document.getElementById('hero-cta').onclick = () => setView('events');
-  document.getElementById('see-events').onclick = () => setView('events');
+  document.getElementById('hero-cta').onclick = () => setView('board');
   document.getElementById('prof-edit').onclick = openProfileModal;
   document.getElementById('prof-avatar').onclick = openProfileModal;
   document.getElementById('tc-all').onclick = () => setView('board');
@@ -718,76 +651,8 @@ function viewDashboard(view) {
 }
 
 function loadDashboard() {
-  loadDashEvents();
   loadMyTasksCard();
-  loadMyReviewCard();
   if (me.role === 'admin') loadPendingCard();
-}
-
-// Show the signed-in user their own latest weekly review (employees can read
-// their own rows via RLS). Admins only see this card if they've been reviewed.
-async function loadMyReviewCard() {
-  const card = document.getElementById('review-card');
-  if (!card) return;
-  const body = card.querySelector('#rc-body');
-  const { data, error } = await supabase
-    .from('weekly_reviews')
-    .select('week_start, rating, note')
-    .eq('user_id', me.id)
-    .order('week_start', { ascending: false });
-
-  if (error) { card.remove(); return; }
-  const revs = data || [];
-  if (!revs.length) {
-    if (me.role === 'admin') { card.remove(); return; }
-    body.innerHTML = '<div class="empty" style="padding:6px 2px">No reviews yet — weekly feedback from your manager will show up here.</div>';
-    return;
-  }
-
-  const latest = revs[0];
-  const [lp, ls] = weekLabelParts(latest.week_start);
-  body.innerHTML = `
-    <div class="rc-top">
-      <span class="rating-badge lg ${ratingTier(latest.rating)}">${latest.rating}<span class="rc-outof">/10</span></span>
-      <div class="rc-meta">
-        <div class="rc-week">${esc(lp)}</div>
-        <div class="muted-mini">${esc(ls)}</div>
-      </div>
-    </div>
-    <div class="rc-note">${latest.note ? esc(latest.note) : '<span class="muted-mini">No note left.</span>'}</div>
-    <button class="link-btn" id="rc-all" type="button">${revs.length > 1 ? `View all ${revs.length} reviews` : 'Read full review'}</button>`;
-
-  const all = body.querySelector('#rc-all');
-  if (all) all.onclick = () => openMyReviewsModal(revs);
-}
-
-// Read-only history of the signed-in user's own reviews.
-function openMyReviewsModal(revs) {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal card pad">
-      <h2 style="margin-bottom:4px;">Your reviews</h2>
-      <p class="subtitle" style="margin-bottom:16px;">Weekly feedback from your manager.</p>
-      <div class="myr-list">
-        ${revs.map((r) => {
-          const [lp, ls] = weekLabelParts(r.week_start);
-          return `
-            <div class="myr-row">
-              <div class="myr-head">
-                <span class="rating-badge ${ratingTier(r.rating)}">${r.rating}</span>
-                <div class="myr-week">${esc(lp)} <span class="muted-mini">· ${esc(ls)}</span></div>
-              </div>
-              <p class="myr-note${r.note ? '' : ' muted-mini'}">${r.note ? esc(r.note) : 'No note left.'}</p>
-            </div>`;
-        }).join('')}
-      </div>
-      <div class="modal-foot"><button class="btn primary" id="myr-close" type="button">Done</button></div>
-    </div>`;
-  document.body.appendChild(overlay);
-  const close = () => overlay.remove();
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  overlay.querySelector('#myr-close').onclick = close;
 }
 
 async function loadPendingCard() {
@@ -822,149 +687,6 @@ function statCard(label, value, sub, id) {
     <div class="stat-value">${value}</div>
     <div class="stat-sub">${sub}</div>
   </div>`;
-}
-
-// ===========================================================================
-// Events view — company events, off-sites, holidays & socials.
-// Everyone sees them; admins add/edit them (times, location, notes + an image).
-// ===========================================================================
-const eventsState = { rows: [] };
-
-// All events, soonest first. select('*') so a database missing the newer
-// image_path column still loads (that field just reads back undefined).
-async function fetchEvents() {
-  const { data, error } = await supabase
-    .from('events')
-    .select('*')
-    .order('starts_on', { ascending: true })
-    .order('start_time', { ascending: true, nullsFirst: true });
-  if (error) throw error;
-  return data || [];
-}
-
-function eventImageUrl(path) {
-  if (!path) return '';
-  const { data } = supabase.storage.from('event-images').getPublicUrl(path);
-  return data.publicUrl;
-}
-
-// "Mon, Jul 6, 2026" for a single day, or "Jul 6 – 8, 2026" across a range.
-function fmtEventDate(ev) {
-  const s = ev.starts_on, e = ev.ends_on || ev.starts_on;
-  if (s === e) {
-    return new Date(`${s}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-  }
-  const sd = new Date(`${s}T00:00:00`), ed = new Date(`${e}T00:00:00`);
-  const sameYear = sd.getFullYear() === ed.getFullYear();
-  const sameMonth = sameYear && sd.getMonth() === ed.getMonth();
-  const sStr = sd.toLocaleDateString(undefined, sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
-  const eStr = ed.toLocaleDateString(undefined, sameMonth ? { day: 'numeric', year: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
-  return `${sStr} – ${eStr}`;
-}
-
-function fmtEventTime(ev) {
-  if (!ev.start_time) return 'All day';
-  return ev.end_time ? fmtRangePlain(ev.start_time, ev.end_time) : fmt12(ev.start_time);
-}
-
-function eventCardHTML(ev, isAdmin) {
-  const k = eventKindOf(ev);
-  const meta = EVENT_KIND[k];
-  const img = eventImageUrl(ev.image_path);
-  return `
-    <div class="ev-card ev-${k}${isAdmin ? ' clickable' : ''}" data-ev="${esc(ev.id)}"${isAdmin ? ' role="button" tabindex="0"' : ''}>
-      ${img ? `<div class="ev-img"><img src="${esc(img)}" alt="${esc(ev.title)}" loading="lazy" /></div>` : ''}
-      <div class="ev-body">
-        <span class="ev-kind ev-kind-${k}">${meta.emoji} ${meta.label}</span>
-        <h3 class="ev-title">${esc(ev.title)}</h3>
-        <div class="ev-lines">
-          <div class="ev-line">${icon('cal', 'ic sm')}<span>${esc(fmtEventDate(ev))}</span></div>
-          <div class="ev-line">${icon('clock', 'ic sm')}<span>${esc(fmtEventTime(ev))}</span></div>
-          ${ev.location ? `<div class="ev-line">${icon('pin', 'ic sm')}<span>${esc(ev.location)}</span></div>` : ''}
-        </div>
-        ${ev.notes ? `<p class="ev-notes">${esc(ev.notes)}</p>` : ''}
-      </div>
-    </div>`;
-}
-
-function viewEvents(view) {
-  const isAdmin = me.role === 'admin';
-  view.innerHTML = `
-    <div class="page-head">
-      <div>
-        <h1>Events</h1>
-        <p class="subtitle" style="margin:2px 0 0;">Company events, off-sites, holidays &amp; socials — everything coming up.</p>
-      </div>
-      ${isAdmin ? `<div class="th-actions"><button class="btn primary" id="ev-add" type="button">${icon('plus', 'ic sm')}<span>Add event</span></button></div>` : ''}
-    </div>
-    <div id="ev-wrap"><div class="spinner">Loading…</div></div>`;
-  const addBtn = view.querySelector('#ev-add');
-  if (addBtn) addBtn.onclick = () => openEventModal(null);
-  loadEvents();
-}
-
-async function loadEvents() {
-  const wrap = document.getElementById('ev-wrap');
-  if (!wrap) return;
-  try {
-    eventsState.rows = await fetchEvents();
-  } catch (e) {
-    wrap.innerHTML = `<div class="card pad"><div class="empty">Couldn't load events: ${esc(e.message)}</div></div>`;
-    return;
-  }
-  renderEvents();
-}
-
-function renderEvents() {
-  const wrap = document.getElementById('ev-wrap');
-  if (!wrap) return;
-  const isAdmin = me.role === 'admin';
-  const rows = eventsState.rows;
-  if (!rows.length) {
-    wrap.innerHTML = `<div class="card pad"><div class="empty">No events yet.${isAdmin ? ' Hit <strong>Add event</strong> to post the first one.' : ' Your admin will post them here.'}</div></div>`;
-    return;
-  }
-  const upcoming = rows.filter((e) => (e.ends_on || e.starts_on) >= TODAY);
-  const past = rows.filter((e) => (e.ends_on || e.starts_on) < TODAY).reverse(); // most recent first
-  const section = (title, list, emptyMsg) => `
-    <div class="ev-section">
-      <div class="ev-sec-head"><h2>${title}</h2><span class="ev-count">${list.length}</span></div>
-      ${list.length ? `<div class="ev-grid">${list.map((e) => eventCardHTML(e, isAdmin)).join('')}</div>` : `<div class="muted-mini" style="padding:2px;">${emptyMsg}</div>`}
-    </div>`;
-  wrap.innerHTML = section('Upcoming', upcoming, 'Nothing coming up right now.') + (past.length ? section('Earlier', past, '') : '');
-  if (isAdmin) {
-    wrap.querySelectorAll('.ev-card').forEach((el) => {
-      const ev = rows.find((x) => x.id === el.dataset.ev);
-      if (!ev) return;
-      el.onclick = () => openEventModal(ev);
-      el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openEventModal(ev); } };
-    });
-  }
-}
-
-// Compact upcoming-events list for the dashboard card.
-function eventRowHTML(ev) {
-  const k = eventKindOf(ev);
-  const d = new Date(`${ev.starts_on}T00:00:00`);
-  return `
-    <div class="de-row">
-      <span class="de-date"><span class="de-num">${d.getDate()}</span><span class="de-mon">${MONTHS[d.getMonth()].slice(0, 3).toUpperCase()}</span></span>
-      <span class="de-info"><span class="de-title">${EVENT_KIND[k].emoji} ${esc(ev.title)}</span><span class="de-sub">${esc(fmtEventTime(ev))}${ev.location ? ` · ${esc(ev.location)}` : ''}</span></span>
-    </div>`;
-}
-
-async function loadDashEvents() {
-  const box = document.getElementById('de-body');
-  if (!box) return;
-  let rows;
-  try { rows = await fetchEvents(); }
-  catch { box.innerHTML = '<div class="empty" style="padding:8px 2px">Couldn\'t load events.</div>'; return; }
-  const upcoming = rows.filter((e) => (e.ends_on || e.starts_on) >= TODAY).slice(0, 4);
-  if (!upcoming.length) {
-    box.innerHTML = `<div class="empty" style="padding:8px 2px">Nothing coming up${me.role === 'admin' ? ' — add one from the Events page.' : ' yet.'}</div>`;
-    return;
-  }
-  box.innerHTML = upcoming.map(eventRowHTML).join('');
 }
 
 // ===========================================================================
@@ -1003,6 +725,34 @@ function myOutreach(win) {
   return n;
 }
 
+// Whole-team total for a window.
+function teamTotal(win) {
+  let n = 0;
+  for (const r of outreach.rows) if (outreachInWindow(r, win)) n += r.count || 0;
+  return n;
+}
+
+// Live updates: when anyone else's counter changes, fold it in and repaint so
+// the leaderboard and team totals move in real time.
+let outreachChannel = null;
+function subscribeOutreach() {
+  if (outreachChannel) return;
+  outreachChannel = supabase
+    .channel('outreach-live')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'outreach_counts' }, (payload) => {
+      const r = payload.new;
+      if (!r || !r.user_id || r.user_id === me.id) return; // my own count is optimistic — ignore echoes
+      const i = outreach.rows.findIndex((x) => x.user_id === r.user_id && x.day === r.day);
+      if (i >= 0) outreach.rows[i] = { ...outreach.rows[i], ...r };
+      else outreach.rows.push(r);
+      paintOutreach();
+    })
+    .subscribe();
+}
+function unsubscribeOutreach() {
+  if (outreachChannel) { supabase.removeChannel(outreachChannel); outreachChannel = null; }
+}
+
 function viewOutreach(view) {
   view.innerHTML = `
     <div class="page-head">
@@ -1025,6 +775,7 @@ function viewOutreach(view) {
     };
   });
   loadOutreach();
+  subscribeOutreach();
 }
 
 async function loadOutreach() {
@@ -1048,7 +799,16 @@ function renderOutreach() {
       </button>
       <div class="or-tap-foot">
         <button class="btn ghost sm" id="or-undo" type="button">− Undo</button>
-        <span class="muted-mini" id="or-team"></span>
+      </div>
+    </div>
+    <div class="card pad or-totals">
+      <div class="card-head"><h3>Team outreach</h3><span class="muted-mini">everyone combined</span></div>
+      <div class="or-totals-grid">
+        ${OUTREACH_WINDOWS.map(([w, l]) => `
+          <div class="or-total">
+            <span class="or-total-n" id="ot-${w}">0</span>
+            <span class="or-total-l">${l}</span>
+          </div>`).join('')}
       </div>
     </div>
     <div class="card pad or-board">
@@ -1068,7 +828,6 @@ function paintOutreach() {
   const label = outreachWinLabel(win);
   const mine = myOutreach(win);
   const board = outreachBoard(win);
-  const teamTotal = board.reduce((s, u) => s + u.count, 0);
   const top = board.length ? board[0].count : 0;
   const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
   set('or-count', mine);
@@ -1076,8 +835,7 @@ function paintOutreach() {
   set('or-boardwin', `· ${label}`);
   const emo = document.getElementById('or-emoji');
   if (emo) emo.textContent = mine >= 50 ? '🚀' : mine >= 20 ? '🔥' : mine >= 1 ? '💪' : '👋';
-  const team = document.getElementById('or-team');
-  if (team) team.innerHTML = `Team reached out <strong>${teamTotal}</strong> time${teamTotal === 1 ? '' : 's'} ${esc(label.toLowerCase())}`;
+  for (const [w] of OUTREACH_WINDOWS) set(`ot-${w}`, teamTotal(w)); // team scoreboard, all windows
   const undo = document.getElementById('or-undo');
   if (undo) undo.disabled = myOutreach('day') <= 0;
   const list = document.getElementById('or-list');
@@ -1228,23 +986,19 @@ async function loadUsers() {
   });
 }
 
-// ---- Individual user detail (analytics + editable schedule + photo) ----
+// ---- Individual user detail (profile + access management + photo) ----
 async function viewTeamDetail(view, uid) {
   view.innerHTML = `
     <button class="link-btn" id="td-back" type="button">‹ Back to team</button>
     <div class="spinner">Loading…</div>`;
   view.querySelector('#td-back').onclick = () => { ui.teamUser = null; setView('team'); };
 
-  let profile, revs;
+  let profile;
   try {
-    const [pRes, rRes] = await Promise.all([
-      supabase.from('profiles').select('id, email, full_name, role, status, created_at, avatar_url').eq('id', uid).maybeSingle(),
-      supabase.from('weekly_reviews').select('week_start, rating, note').eq('user_id', uid).order('week_start', { ascending: false }),
-    ]);
-    if (pRes.error) throw pRes.error;
-    if (rRes.error) throw rRes.error;
-    profile = pRes.data;
-    revs = rRes.data || [];
+    const { data, error } = await supabase.from('profiles')
+      .select('id, email, full_name, role, status, created_at, avatar_url').eq('id', uid).maybeSingle();
+    if (error) throw error;
+    profile = data;
   } catch (e) {
     view.innerHTML = `
       <button class="link-btn" id="td-back2" type="button">‹ Back to team</button>
@@ -1259,10 +1013,10 @@ async function viewTeamDetail(view, uid) {
     view.querySelector('#td-back3').onclick = () => { ui.teamUser = null; setView('team'); };
     return;
   }
-  renderTeamDetail(view, profile, revs);
+  renderTeamDetail(view, profile);
 }
 
-function renderTeamDetail(view, p, revs) {
+function renderTeamDetail(view, p) {
   const isSelf = p.id === me.id;
 
   const roleToggle = p.role === 'admin'
@@ -1272,22 +1026,6 @@ function renderTeamDetail(view, p, revs) {
     ? (isSelf ? '' : `<button class="btn danger sm" data-act="deny" data-id="${esc(p.id)}">Revoke access</button>`)
     : `<button class="btn green sm" data-act="approve" data-id="${esc(p.id)}">Approve</button>` +
       (p.status === 'pending' ? `<button class="btn danger sm" data-act="deny" data-id="${esc(p.id)}">Deny</button>` : '');
-
-  const curWs = weekStartISO();
-  const reviewedThisWeek = revs.some((r) => r.week_start === curWs);
-  const reviewsHTML = revs.length
-    ? revs.map((r) => `
-        <div class="sched-row">
-          <div class="sched-when">
-            <span class="rating-badge ${ratingTier(r.rating)}">${r.rating}</span>
-            <div>
-              <div class="sched-date">${esc(relWeekLabel(r.week_start))} <span class="muted-mini">· ${new Date(`${r.week_start}T00:00:00`).getFullYear()}</span></div>
-              <div class="muted-mini rv-note-line">${r.note ? esc(r.note) : 'No note'}</div>
-            </div>
-          </div>
-          <div class="actions"><button class="btn ghost sm" data-review-week="${esc(r.week_start)}">Edit</button></div>
-        </div>`).join('')
-    : '<div class="empty">No reviews yet.</div>';
 
   view.innerHTML = `
     <button class="link-btn" id="td-back" type="button">‹ Back to team</button>
@@ -1302,23 +1040,10 @@ function renderTeamDetail(view, p, revs) {
         <div class="dh-badges"><span class="badge ${esc(p.role)}">${esc(p.role)}</span><span class="badge ${esc(p.status)}">${esc(p.status)}</span></div>
       </div>
       <div class="dh-actions">${statusActions}${roleToggle}</div>
-    </div>
-
-    <div class="section">
-      <div class="section-head">
-        <h2 style="margin:0">Weekly reviews</h2>
-        <button class="btn primary sm" id="td-review" type="button">${reviewedThisWeek ? "Edit this week's" : 'Review this week'}</button>
-      </div>
-      <div class="card pad"><div class="sched-list">${reviewsHTML}</div></div>
     </div>`;
 
   view.querySelector('#td-back').onclick = () => { ui.teamUser = null; setView('team'); };
   view.querySelector('#td-photo').onclick = () => changeAvatar(p.id, () => refreshTeam());
-  view.querySelector('#td-review').onclick = () =>
-    openReviewModal(p, curWs, revs.find((r) => r.week_start === curWs) || null, () => refreshTeam());
-  view.querySelectorAll('[data-review-week]').forEach((b) => {
-    b.onclick = () => openReviewModal(p, b.dataset.reviewWeek, revs.find((r) => r.week_start === b.dataset.reviewWeek) || null, () => refreshTeam());
-  });
 }
 
 // All approved people, for the admin backfill person-picker (admins only).
@@ -1330,353 +1055,6 @@ async function fetchApprovedUsers() {
     .order('full_name', { ascending: true });
   if (error) { toast(error.message); return null; }
   return data || [];
-}
-
-// ===========================================================================
-// Company events / off-sites (admin) — drop them onto the shared calendar
-// ===========================================================================
-// Create or edit an event. `existing` is the event row (edit) or null (new);
-// dayISO seeds the date for a brand-new event.
-function openEventModal(existing, dayISO) {
-  if (me.role !== 'admin') return;
-  let kind = existing ? eventKindOf(existing) : 'event';
-  const startsOn = existing ? existing.starts_on : (dayISO || TODAY);
-  const endsOn = existing ? (existing.ends_on || existing.starts_on) : (dayISO || TODAY);
-  const timed = !!(existing && existing.start_time);
-  const st = existing && existing.start_time ? hhmm(existing.start_time) : '09:00';
-  const en = existing && existing.end_time ? hhmm(existing.end_time) : '17:00';
-  const existingImg = existing && existing.image_path ? existing.image_path : null;
-  let imgFile = null;      // a newly chosen file (replaces the image on save)
-  let imgRemoved = false;  // admin cleared the existing image
-  let imgObjUrl = null;    // object URL for the local preview
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal card pad">
-      <h2 style="margin-bottom:4px;">${existing ? 'Edit event' : 'Add event'}</h2>
-      <p class="subtitle" style="margin-bottom:16px;">Everyone sees it on the Events page.</p>
-      <label>Title</label>
-      <input type="text" id="ev-title" maxlength="120" placeholder="Q3 Off-site, All-hands, Holiday party…" value="${esc(existing ? existing.title : '')}" />
-      <label style="margin-top:14px;">Type</label>
-      <div class="kind-select ev-kind-select">
-        ${Object.entries(EVENT_KIND).map(([key, v]) =>
-          `<button type="button" class="kind-opt ev-opt${kind === key ? ' active' : ''}" data-evkind="${key}">${v.emoji} ${v.label}</button>`).join('')}
-      </div>
-      <div class="hours-row" style="margin-top:14px;">
-        <div><label>Starts</label><input type="date" id="ev-start" value="${startsOn}"></div>
-        <div><label>Ends</label><input type="date" id="ev-end" value="${endsOn}"></div>
-      </div>
-      <label class="ev-allday"><input type="checkbox" id="ev-allday"${timed ? '' : ' checked'} /> <span>All day (no set time)</span></label>
-      <div class="hours-wrap" id="ev-times"${timed ? '' : ' style="display:none"'}>
-        <div class="hours-row">
-          <div><label>From</label><input type="time" id="ev-stime" value="${st}"></div>
-          <div><label>To</label><input type="time" id="ev-etime" value="${en}"></div>
-        </div>
-      </div>
-      <label style="margin-top:14px;">Location <span class="muted-mini">(optional)</span></label>
-      <input type="text" id="ev-loc" maxlength="160" placeholder="HQ, Zoom, Lisbon…" value="${esc(existing ? existing.location : '')}" />
-      <label style="margin-top:14px;">Notes <span class="muted-mini">(optional)</span></label>
-      <textarea id="ev-notes" rows="2" maxlength="1000" placeholder="Agenda, who's invited, travel info…">${esc(existing ? existing.notes : '')}</textarea>
-      <label style="margin-top:14px;">Image <span class="muted-mini">(optional)</span></label>
-      <div class="ev-image">
-        <div class="ev-img-preview" id="ev-img-preview"></div>
-        <div class="ev-img-actions">
-          <button type="button" class="btn ghost sm" id="ev-img-choose"></button>
-          <button type="button" class="btn ghost sm" id="ev-img-remove" style="display:none;">Remove</button>
-          <input type="file" id="ev-img-file" accept="image/*" hidden />
-        </div>
-      </div>
-      <div id="ev-msg" class="msg"></div>
-      <div class="modal-foot">
-        ${existing ? '<button class="btn danger" id="ev-remove" type="button" style="margin-right:auto;">Delete</button>' : ''}
-        <button class="btn ghost" id="ev-cancel" type="button">Cancel</button>
-        <button class="btn primary" id="ev-save" type="button">${existing ? 'Save' : 'Add event'}</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  const close = () => { if (imgObjUrl) URL.revokeObjectURL(imgObjUrl); overlay.remove(); };
-  const msg = overlay.querySelector('#ev-msg');
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  overlay.querySelector('#ev-cancel').onclick = close;
-  overlay.querySelector('#ev-title').focus();
-
-  overlay.querySelectorAll('[data-evkind]').forEach((b) => {
-    b.onclick = () => {
-      kind = b.dataset.evkind;
-      overlay.querySelectorAll('[data-evkind]').forEach((x) => x.classList.remove('active'));
-      b.classList.add('active');
-    };
-  });
-
-  const allday = overlay.querySelector('#ev-allday');
-  const times = overlay.querySelector('#ev-times');
-  allday.onchange = () => { times.style.display = allday.checked ? 'none' : ''; };
-
-  // Keep the end date from drifting before the start date.
-  const startEl = overlay.querySelector('#ev-start');
-  const endEl = overlay.querySelector('#ev-end');
-  startEl.onchange = () => { if (endEl.value && endEl.value < startEl.value) endEl.value = startEl.value; };
-
-  // Image field: choose / replace / remove, with a live preview.
-  const imgPreview = overlay.querySelector('#ev-img-preview');
-  const imgFileEl = overlay.querySelector('#ev-img-file');
-  const imgChoose = overlay.querySelector('#ev-img-choose');
-  const imgRemoveBtn = overlay.querySelector('#ev-img-remove');
-  const paintImg = () => {
-    let src = '';
-    if (imgFile && imgObjUrl) src = imgObjUrl;
-    else if (existingImg && !imgRemoved) src = eventImageUrl(existingImg);
-    imgPreview.innerHTML = src ? `<img src="${esc(src)}" alt="" />` : `<span class="ev-img-none">${icon('image', 'ic')}No image</span>`;
-    imgRemoveBtn.style.display = src ? '' : 'none';
-    imgChoose.innerHTML = `${icon('image', 'ic sm')} ${src ? 'Replace' : 'Choose image'}`;
-  };
-  imgChoose.onclick = () => imgFileEl.click();
-  imgFileEl.onchange = () => {
-    const f = imgFileEl.files && imgFileEl.files[0];
-    if (!f) return;
-    if (f.size > 10 * 1024 * 1024) { msg.textContent = 'Image must be under 10 MB.'; msg.className = 'msg show error'; imgFileEl.value = ''; return; }
-    msg.className = 'msg';
-    imgFile = f; imgRemoved = false;
-    if (imgObjUrl) URL.revokeObjectURL(imgObjUrl);
-    imgObjUrl = URL.createObjectURL(f);
-    paintImg();
-  };
-  imgRemoveBtn.onclick = () => {
-    imgFile = null; imgRemoved = true;
-    if (imgObjUrl) { URL.revokeObjectURL(imgObjUrl); imgObjUrl = null; }
-    imgFileEl.value = '';
-    paintImg();
-  };
-  paintImg();
-
-  const refresh = () => {
-    if (ui.view === 'events') loadEvents();
-    else if (ui.view === 'dashboard') loadDashEvents();
-  };
-
-  const rm = overlay.querySelector('#ev-remove');
-  if (rm) rm.onclick = async () => {
-    rm.disabled = true;
-    const { error } = await supabase.from('events').delete().eq('id', existing.id);
-    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; rm.disabled = false; return; }
-    if (existing.image_path) supabase.storage.from('event-images').remove([existing.image_path]).catch(() => {});
-    close(); toast('Event deleted'); refresh();
-  };
-
-  overlay.querySelector('#ev-save').onclick = async () => {
-    const title = overlay.querySelector('#ev-title').value.trim();
-    if (!title) { msg.textContent = 'Please give the event a title.'; msg.className = 'msg show error'; return; }
-    const starts = startEl.value;
-    if (!starts) { msg.textContent = 'Please choose a start date.'; msg.className = 'msg show error'; return; }
-    let ends = endEl.value || starts;
-    if (ends < starts) ends = starts;
-    let stime = null, etime = null;
-    if (!allday.checked) {
-      stime = overlay.querySelector('#ev-stime').value;
-      etime = overlay.querySelector('#ev-etime').value;
-      if (!stime || !etime) { msg.textContent = 'Set a start and end time, or tick All day.'; msg.className = 'msg show error'; return; }
-    }
-    const saveBtn = overlay.querySelector('#ev-save');
-    saveBtn.disabled = true;
-
-    // Resolve the image: upload a new one, keep the old, or clear it.
-    let image_path = imgRemoved ? null : existingImg;
-    if (imgFile) {
-      const safe = ((imgFile.name || 'image').replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+/, '').slice(-60)) || 'image';
-      const rnd = (globalThis.crypto && globalThis.crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const path = `${rnd}-${safe}`;
-      const { error: upErr } = await supabase.storage.from('event-images')
-        .upload(path, imgFile, { contentType: imgFile.type || 'image/*', upsert: false });
-      if (upErr) { msg.textContent = upErr.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-      image_path = path;
-    }
-
-    const payload = {
-      title, kind, starts_on: starts, ends_on: ends,
-      start_time: stime, end_time: etime,
-      location: overlay.querySelector('#ev-loc').value.trim(),
-      notes: overlay.querySelector('#ev-notes').value.trim(),
-      image_path,
-      created_by: me.id, updated_at: new Date().toISOString(),
-    };
-    // Write, tolerating a DB that predates the image_path column (retry without it).
-    const write = async (p) => {
-      let res = existing
-        ? await supabase.from('events').update(p).eq('id', existing.id)
-        : await supabase.from('events').insert(p);
-      if (res.error && isMissingSchema(res.error) && 'image_path' in p) {
-        const { image_path: _drop, ...safe } = p;
-        res = existing
-          ? await supabase.from('events').update(safe).eq('id', existing.id)
-          : await supabase.from('events').insert(safe);
-      }
-      return res;
-    };
-    const { error } = await write(payload);
-    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-    // Clean up the old image if it was replaced or removed.
-    if (existingImg && existingImg !== image_path) supabase.storage.from('event-images').remove([existingImg]).catch(() => {});
-    close(); toast(existing ? 'Event saved' : 'Event added'); refresh();
-  };
-}
-
-// ===========================================================================
-// Weekly reviews (admin) — rate each employee 1–10 + a note, once per week
-// ===========================================================================
-function viewReviews(view) {
-  reviews.weekStart = weekStartISO(); // always open on the current week
-  view.innerHTML = `
-    <div class="page-head">
-      <div>
-        <h1>Weekly reviews</h1>
-        <p class="subtitle" style="margin:2px 0 0;">Rate each employee 1–10 and leave a note — once a week, any time during the week.</p>
-      </div>
-    </div>
-    <div class="cal-toolbar">
-      <div class="cal-month-title" id="rv-title"></div>
-      <div class="cal-nav">
-        <button class="btn ghost sm" id="rv-prev" type="button" aria-label="Previous week">‹</button>
-        <button class="btn ghost sm" id="rv-this" type="button">This week</button>
-        <button class="btn ghost sm" id="rv-next" type="button" aria-label="Next week">›</button>
-      </div>
-    </div>
-    <div id="rv-stats" class="rv-stats"></div>
-    <div class="card pad"><div id="rv-list"><div class="spinner">Loading…</div></div></div>`;
-
-  view.querySelector('#rv-prev').onclick = () => { reviews.weekStart = addDaysISO(reviews.weekStart, -7); loadReviews(); };
-  view.querySelector('#rv-next').onclick = () => {
-    if (reviews.weekStart >= weekStartISO()) return; // can't review a future week
-    reviews.weekStart = addDaysISO(reviews.weekStart, 7); loadReviews();
-  };
-  view.querySelector('#rv-this').onclick = () => { reviews.weekStart = weekStartISO(); loadReviews(); };
-  loadReviews();
-}
-
-async function loadReviews() {
-  const ws = reviews.weekStart;
-  const title = document.getElementById('rv-title');
-  if (title) {
-    const rel = relWeekLabel(ws);
-    title.textContent = rel === fmtWeekRange(ws) ? weekTitle(ws) : `${rel} · ${fmtWeekRange(ws)}`;
-  }
-  const nextBtn = document.getElementById('rv-next');
-  if (nextBtn) nextBtn.disabled = ws >= weekStartISO();
-
-  const listEl = document.getElementById('rv-list');
-  const [uRes, rRes] = await Promise.all([
-    supabase.from('profiles').select('id, full_name, email, avatar_url').eq('status', 'approved').order('full_name', { ascending: true }),
-    supabase.from('weekly_reviews').select('user_id, rating, note').eq('week_start', ws),
-  ]);
-  if (uRes.error || rRes.error) {
-    if (listEl) listEl.innerHTML = `<div class="empty">Couldn't load reviews: ${esc((uRes.error || rRes.error).message)}</div>`;
-    return;
-  }
-  const employees = uRes.data || [];
-  const rows = rRes.data || [];
-  const byUser = new Map(rows.map((r) => [r.user_id, r]));
-  const reviewed = rows.length;
-  const total = employees.length;
-  const avg = reviewed ? rows.reduce((s, r) => s + r.rating, 0) / reviewed : 0;
-
-  const statsEl = document.getElementById('rv-stats');
-  if (statsEl) statsEl.innerHTML =
-    statCard('Reviewed', `${reviewed}/${total}`, '<span class="muted-mini">employees</span>') +
-    statCard('Average rating', reviewed ? avg.toFixed(1) : '—', '<span class="muted-mini">out of 10</span>') +
-    statCard('Still to review', total - reviewed, `<span class="muted-mini">${total - reviewed === 0 ? 'all done 🎉' : 'remaining'}</span>`);
-
-  if (!listEl) return;
-  if (!total) { listEl.innerHTML = '<div class="empty">No approved employees to review yet.</div>'; return; }
-
-  listEl.innerHTML = employees.map((u) => {
-    const r = byUser.get(u.id);
-    const meFlag = u.id === me.id;
-    const status = r
-      ? (r.note ? esc(r.note) : '<span class="muted-mini">No note</span>')
-      : '<span class="muted-mini">Not reviewed yet</span>';
-    return `
-      <div class="rv-row">
-        <div class="rv-person">
-          ${avatarHTML(u.full_name || u.email, meFlag, '', u.avatar_url)}
-          <div class="rv-person-text">
-            <div class="rv-name">${esc(u.full_name || u.email)}${meFlag ? ' <span class="muted-mini">(you)</span>' : ''}</div>
-            <div class="rv-note">${status}</div>
-          </div>
-        </div>
-        <div class="rv-action">
-          ${r ? `<span class="rating-badge ${ratingTier(r.rating)}">${r.rating}</span>` : ''}
-          <button class="btn ${r ? 'ghost' : 'primary'} sm" type="button" data-review="${esc(u.id)}">${r ? 'Edit' : 'Review'}</button>
-        </div>
-      </div>`;
-  }).join('');
-
-  listEl.querySelectorAll('[data-review]').forEach((b) => {
-    b.onclick = () => {
-      const u = employees.find((e) => e.id === b.dataset.review);
-      openReviewModal(u, ws, byUser.get(u.id) || null, loadReviews);
-    };
-  });
-}
-
-// Rate 1–10 + note for one employee for one week. onSaved() runs after save/delete.
-function openReviewModal(profile, ws, existing, onSaved) {
-  let rating = existing ? existing.rating : 0;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal card pad">
-      <h2 style="margin-bottom:4px;">Weekly review</h2>
-      <p class="subtitle" style="margin-bottom:16px;">${esc(profile.full_name || profile.email)} · ${weekTitle(ws)}</p>
-      <label>Performance rating</label>
-      <div class="rating-scale" id="rv-scale">
-        ${Array.from({ length: 10 }, (_, i) => i + 1).map((n) =>
-          `<button type="button" class="rate-btn${n === rating ? ` active ${ratingTier(n)}` : ''}" data-n="${n}">${n}</button>`).join('')}
-      </div>
-      <div class="rating-hint"><span>1 · Needs work</span><span>Excellent · 10</span></div>
-      <label style="margin-top:14px;">Note</label>
-      <textarea id="rv-note" rows="4" maxlength="2000" placeholder="What went well, what to improve…">${esc(existing ? existing.note : '')}</textarea>
-      <div id="rv-msg" class="msg"></div>
-      <div class="modal-foot">
-        ${existing ? '<button class="btn danger" id="rv-remove" type="button" style="margin-right:auto;">Delete</button>' : ''}
-        <button class="btn ghost" id="rv-cancel" type="button">Cancel</button>
-        <button class="btn primary" id="rv-save" type="button">Save review</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  const close = () => overlay.remove();
-  const msg = overlay.querySelector('#rv-msg');
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  overlay.querySelector('#rv-cancel').onclick = close;
-
-  overlay.querySelectorAll('.rate-btn').forEach((b) => {
-    b.onclick = () => {
-      rating = Number(b.dataset.n);
-      overlay.querySelectorAll('.rate-btn').forEach((x) => { x.className = 'rate-btn'; });
-      b.className = `rate-btn active ${ratingTier(rating)}`;
-    };
-  });
-
-  const rm = overlay.querySelector('#rv-remove');
-  if (rm) rm.onclick = async () => {
-    rm.disabled = true;
-    const { error } = await supabase.from('weekly_reviews').delete().eq('user_id', profile.id).eq('week_start', ws);
-    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; rm.disabled = false; return; }
-    close(); toast('Review deleted'); if (onSaved) onSaved();
-  };
-
-  overlay.querySelector('#rv-save').onclick = async () => {
-    if (!rating) { msg.textContent = 'Please pick a rating from 1 to 10.'; msg.className = 'msg show error'; return; }
-    const note = overlay.querySelector('#rv-note').value.trim();
-    const saveBtn = overlay.querySelector('#rv-save');
-    saveBtn.disabled = true;
-    const payload = {
-      user_id: profile.id, week_start: ws, rating, note,
-      reviewer_id: me.id, updated_at: new Date().toISOString(),
-    };
-    const { error } = await supabase.from('weekly_reviews').upsert(payload, { onConflict: 'user_id,week_start' });
-    if (error) { msg.textContent = error.message; msg.className = 'msg show error'; saveBtn.disabled = false; return; }
-    close(); toast('Review saved'); if (onSaved) onSaved();
-  };
 }
 
 // ===========================================================================
