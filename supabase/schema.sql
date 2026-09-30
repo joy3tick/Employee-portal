@@ -1,18 +1,15 @@
 -- ===========================================================================
--- Redline Employee Portal — Supabase schema (static / client-direct version)
+-- Redline Employee Portal — Supabase schema (complete, current app)
 -- ---------------------------------------------------------------------------
--- HOW TO APPLY (FRESH project only):
+-- HOW TO APPLY:
 --   1. Supabase dashboard -> SQL Editor -> "New query".
---   2. Paste this whole file and click "Run".
+--   2. Paste this WHOLE file and click "Run".
 --
--- ⚠️  DO NOT re-run this whole file against a LIVE project that people are
---     using. It drops & recreates the profiles / office_days security policies
---     and briefly locks those tables — and because the app reads `profiles` on
---     every page load to sign you in, re-running this on a live site can make it
---     hang on "Loading…" until the script finishes.
---     To ADD a feature to a live project, run the small, isolated migration for
---     that feature instead (e.g. supabase/board_update.sql), which only adds the
---     new objects and never touches the login/schedule policies.
+-- Sets up everything the app uses: accounts + admin approval, profile pictures,
+-- the task board (labels, ordering, checklists, comments, 50 MB attachments),
+-- and the live Outreach tracker. Safe + idempotent — re-running only refreshes
+-- policies (it briefly re-creates the `profiles` policies, a sub-second blip on
+-- a small table), so running it on the live project is fine.
 --
 -- The web app talks to Supabase directly from the browser with the anon key,
 -- so ALL security lives in the Row Level Security policies below.
@@ -36,34 +33,6 @@ create table if not exists public.profiles (
   created_at  timestamptz not null default now()
 );
 
-create table if not exists public.office_days (
-  id            uuid primary key default gen_random_uuid(),
-  user_id       uuid not null references public.profiles (id) on delete cascade,
-  day           date not null,
-  display_name  text not null default '',
-  created_at    timestamptz not null default now(),
-  unique (user_id, day)
-);
--- In case an older version of this table already exists:
-alter table public.office_days add column if not exists display_name text not null default '';
--- Hours the person will be in the office (open 24/7, so any time is valid;
--- end <= start means an overnight shift into the next day).
-alter table public.office_days add column if not exists start_time time;
-alter table public.office_days add column if not exists end_time   time;
--- Whether the person is in the office, working remote, on vacation, or off sick
--- that day. (start_time/end_time apply when kind = 'in' or 'remote' — both are
--- working days; they're ignored for vacation/sick.)
-alter table public.office_days
-  add column if not exists kind text not null default 'in'
-  check (kind in ('in', 'remote', 'vacation', 'sick'));
--- Widen the check for tables created before 'remote' existed (the add-column
--- check above only takes effect the first time the column is created).
-alter table public.office_days drop constraint if exists office_days_kind_check;
-alter table public.office_days
-  add constraint office_days_kind_check check (kind in ('in', 'remote', 'vacation', 'sick'));
-
-create index if not exists office_days_day_idx     on public.office_days (day);
-create index if not exists office_days_user_id_idx on public.office_days (user_id);
 create index if not exists profiles_status_idx     on public.profiles (status);
 
 -- ---------------------------------------------------------------------------
@@ -114,7 +83,6 @@ $$;
 -- Row Level Security
 -- ---------------------------------------------------------------------------
 alter table public.profiles    enable row level security;
-alter table public.office_days enable row level security;
 
 -- profiles: read your own row; admins read + update everyone. Nobody can change
 -- their own role/status (only admins can update profiles at all).
@@ -125,17 +93,6 @@ create policy profiles_select_own   on public.profiles for select using (id = au
 create policy profiles_select_admin on public.profiles for select using (public.is_admin());
 create policy profiles_update_admin on public.profiles for update
   using (public.is_admin()) with check (public.is_admin());
-
--- office_days: approved users see everyone's days; you can add/remove only yours.
-drop policy if exists office_days_select_approved on public.office_days;
-drop policy if exists office_days_insert_own      on public.office_days;
-drop policy if exists office_days_delete_own      on public.office_days;
-create policy office_days_select_approved on public.office_days for select
-  using (public.is_approved());
-create policy office_days_insert_own on public.office_days for insert
-  with check (user_id = auth.uid() and public.is_approved());
-create policy office_days_delete_own on public.office_days for delete
-  using (user_id = auth.uid());
 
 -- ---------------------------------------------------------------------------
 -- Let users edit their OWN profile (e.g. their display name) — but NOT their
@@ -169,20 +126,13 @@ create trigger protect_profile_columns
   before update on public.profiles
   for each row execute function public.protect_profile_columns();
 
--- Allow users to keep the denormalized name on their own office_days in sync
--- when they rename themselves.
-drop policy if exists office_days_update_own on public.office_days;
-create policy office_days_update_own on public.office_days for update
-  using (user_id = auth.uid()) with check (user_id = auth.uid());
-
 -- ---------------------------------------------------------------------------
 -- Profile pictures
 -- ---------------------------------------------------------------------------
--- avatar_url lives on the profile, and is denormalized onto office_days (like
--- display_name) so the shared calendar can show everyone's photo even though
+-- avatar_url lives on the profile. It's also denormalized onto board cards
+-- (assignee_avatar) so the shared board can show everyone's photo even though
 -- employees can't read each other's profile rows.
 alter table public.profiles    add column if not exists avatar_url text;
-alter table public.office_days add column if not exists avatar_url text;
 
 -- Public "avatars" storage bucket (read by anyone; uploads are restricted below).
 insert into storage.buckets (id, name, public)
@@ -215,44 +165,6 @@ create policy avatars_delete on storage.objects for delete using (
 );
 
 -- ---------------------------------------------------------------------------
--- Let admins manage everyone's office days (edit hours, fix or add entries).
--- ---------------------------------------------------------------------------
-drop policy if exists office_days_admin_all on public.office_days;
-create policy office_days_admin_all on public.office_days for all
-  using (public.is_admin()) with check (public.is_admin());
-
--- ---------------------------------------------------------------------------
--- Weekly performance reviews (admin-only)
--- ---------------------------------------------------------------------------
--- One review per employee per week. week_start is the Monday of the reviewed
--- week, so the unique (user_id, week_start) constraint enforces "once a week".
-create table if not exists public.weekly_reviews (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references public.profiles (id) on delete cascade,
-  week_start  date not null,
-  rating      int  not null check (rating between 1 and 10),
-  note        text not null default '',
-  reviewer_id uuid references public.profiles (id) on delete set null,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now(),
-  unique (user_id, week_start)
-);
-create index if not exists weekly_reviews_user_idx on public.weekly_reviews (user_id);
-create index if not exists weekly_reviews_week_idx on public.weekly_reviews (week_start);
-
-alter table public.weekly_reviews enable row level security;
-
--- Admins can read and write every review.
-drop policy if exists weekly_reviews_admin_all on public.weekly_reviews;
-create policy weekly_reviews_admin_all on public.weekly_reviews for all
-  using (public.is_admin()) with check (public.is_admin());
-
--- Employees can READ their own reviews once posted (but never write them).
-drop policy if exists weekly_reviews_select_own on public.weekly_reviews;
-create policy weekly_reviews_select_own on public.weekly_reviews for select
-  using (user_id = auth.uid());
-
--- ---------------------------------------------------------------------------
 -- Task board (Trello-style Kanban) — everyone
 -- ---------------------------------------------------------------------------
 -- Stored in its OWN table (board_cards) so it never collides with the assigned
@@ -264,7 +176,7 @@ create policy weekly_reviews_select_own on public.weekly_reviews for select
 -- card into (or back out of) 'completed'. Once a card is completed, its
 -- assignee — or an admin — can delete it (or just leave it there).
 --
--- assignee_name + assignee_avatar are denormalized (like office_days) so
+-- assignee_name + assignee_avatar are denormalized (like the profile name/photo) so
 -- everyone can see whose card it is without reading each other's profiles.
 create table if not exists public.board_cards (
   id              uuid primary key default gen_random_uuid(),
@@ -435,7 +347,7 @@ create trigger protect_checklist_columns
 -- ---------------------------------------------------------------------------
 -- Card comments — a discussion thread on each board card (everyone).
 -- ---------------------------------------------------------------------------
--- author_name + author_avatar are denormalized (like office_days) so the whole
+-- author_name + author_avatar are denormalized (like the profile name/photo) so the whole
 -- team can see who said what without reading each other's profile rows.
 create table if not exists public.card_comments (
   id            uuid primary key default gen_random_uuid(),
@@ -553,65 +465,6 @@ create policy card_attach_insert on storage.objects for insert with check (
 create policy card_attach_delete on storage.objects for delete using (
   bucket_id = 'card-attachments'
   and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
-);
-
--- ---------------------------------------------------------------------------
--- Company events / off-sites (admin-managed, everyone sees them)
--- ---------------------------------------------------------------------------
--- Admins drop events, off-sites, holidays, and socials onto the shared
--- calendar. They can span multiple days (ends_on) and optionally have a time
--- window; leaving the times empty makes it an all-day event.
-create table if not exists public.events (
-  id          uuid primary key default gen_random_uuid(),
-  title       text not null,
-  kind        text not null default 'event' check (kind in ('event', 'offsite', 'holiday', 'social')),
-  starts_on   date not null,
-  ends_on     date not null,              -- = starts_on for a single-day event
-  start_time  time,                       -- null/null => all-day
-  end_time    time,
-  location    text not null default '',
-  notes       text not null default '',
-  created_by  uuid references public.profiles (id) on delete set null,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
-);
-create index if not exists events_starts_idx on public.events (starts_on);
-create index if not exists events_ends_idx   on public.events (ends_on);
--- Optional cover image per event (admin-uploaded). Stored in the "event-images"
--- bucket; this column holds the object key (the app builds the public URL).
-alter table public.events add column if not exists image_path text;
-
-alter table public.events enable row level security;
-
--- Every approved user can read events; only admins can create/edit/delete them.
-drop policy if exists events_select_approved on public.events;
-drop policy if exists events_admin_all       on public.events;
-create policy events_select_approved on public.events for select
-  using (public.is_approved());
-create policy events_admin_all on public.events for all
-  using (public.is_admin()) with check (public.is_admin());
-
--- "event-images" storage bucket — public read (everyone sees event cover
--- images), admin-only writes (only admins manage events, so the path doesn't
--- need to encode ownership). 10 MB per image.
-insert into storage.buckets (id, name, public, file_size_limit)
-values ('event-images', 'event-images', true, 10485760)
-on conflict (id) do update set public = true, file_size_limit = 10485760;
-
-drop policy if exists event_images_read   on storage.objects;
-drop policy if exists event_images_write  on storage.objects;
-drop policy if exists event_images_update on storage.objects;
-drop policy if exists event_images_delete on storage.objects;
-create policy event_images_read on storage.objects for select
-  using (bucket_id = 'event-images');
-create policy event_images_write on storage.objects for insert with check (
-  bucket_id = 'event-images' and public.is_admin()
-);
-create policy event_images_update on storage.objects for update
-  using (bucket_id = 'event-images' and public.is_admin())
-  with check (bucket_id = 'event-images' and public.is_admin());
-create policy event_images_delete on storage.objects for delete using (
-  bucket_id = 'event-images' and public.is_admin()
 );
 
 -- ---------------------------------------------------------------------------
