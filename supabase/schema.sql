@@ -32,6 +32,13 @@ create table if not exists public.profiles (
   status      text not null default 'pending'  check (status in ('pending', 'approved', 'denied')),
   created_at  timestamptz not null default now()
 );
+-- Self-heal a profiles table from an older/starter setup that predates any of
+-- these columns (this is what "column status does not exist" means on re-run).
+alter table public.profiles add column if not exists email      text not null default '';
+alter table public.profiles add column if not exists full_name  text not null default '';
+alter table public.profiles add column if not exists role       text not null default 'employee';
+alter table public.profiles add column if not exists status     text not null default 'pending';
+alter table public.profiles add column if not exists created_at timestamptz not null default now();
 
 create index if not exists profiles_status_idx     on public.profiles (status);
 
@@ -194,6 +201,18 @@ create table if not exists public.board_cards (
   completed_at    timestamptz,
   completed_by    uuid references public.profiles (id) on delete set null
 );
+-- Self-heal a board_cards table that predates any of these columns.
+alter table public.board_cards add column if not exists title           text not null default '';
+alter table public.board_cards add column if not exists description     text not null default '';
+alter table public.board_cards add column if not exists status          text not null default 'inbound';
+alter table public.board_cards add column if not exists assignee_id     uuid references public.profiles (id) on delete set null;
+alter table public.board_cards add column if not exists assignee_name   text not null default '';
+alter table public.board_cards add column if not exists assignee_avatar text;
+alter table public.board_cards add column if not exists created_by      uuid references public.profiles (id) on delete set null;
+alter table public.board_cards add column if not exists created_at      timestamptz not null default now();
+alter table public.board_cards add column if not exists updated_at      timestamptz not null default now();
+alter table public.board_cards add column if not exists completed_at    timestamptz;
+alter table public.board_cards add column if not exists completed_by    uuid references public.profiles (id) on delete set null;
 -- In case the table predates due dates:
 alter table public.board_cards add column if not exists due_date date;
 -- Colored labels (preset keys picked in the app) + manual ordering within a
